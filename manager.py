@@ -6,7 +6,7 @@ import random
 TOKEN = "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4" 
 bot = telebot.TeleBot(TOKEN)
 
-# প্রিমিয়াম ইনলাইন মেনু ডিজাইন (অনলাইন আর্নিং বাজার স্টাইল)
+# প্রিমিয়াম ইনলাইন মেনু ডিজাইন
 def get_inline_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn1 = types.InlineKeyboardButton("📝 একাউন্ট জমা দিন", callback_data="submit_acc")
@@ -20,13 +20,12 @@ def get_inline_menu():
     markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8)
     return markup
 
-# /start কমান্ড হ্যান্ডলার (চ্যানেল জয়েন ভেরিফিকেশন সহ প্রিমিয়াম লুক)
+# /start কমান্ড হ্যান্ডলার (চ্যানেল জয়েন ও প্রিমিয়াম লুক)
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     try:
         user_name = message.from_user.first_name
         
-        # চ্যানেল বা গ্রুপে জয়েন করার প্রিমিয়াম ইনলাইন বাটন
         channel_markup = types.InlineKeyboardMarkup(row_width=2)
         channel_markup.add(
             types.InlineKeyboardButton("📢 Join Channel", url="https://t.me/your_channel_link"),
@@ -53,11 +52,11 @@ def handle_inline_buttons(call):
         
         if query == "verify_join":
             bot.answer_callback_query(call.id, "✅ ভেরিফিকেশন সফল হয়েছে!")
-            bot.send_message(chat_id, "🔥 **Online Earning Bazar** ড্যাশবোর্ডে স্বাগতম!\n\nআপনার প্রয়োজনীয় অপশনটি নিচে থেকে সিলেক্ট করুন:", reply_markup=get_inline_menu(), parse_mode="Markdown")
+            bot.send_message(chat_id, f"🔥 **Online Earning Bazar** ড্যাশবোর্ডে স্বাগতম!\n\nআপনার প্রয়োজনীয় অপشنটি নিচে থেকে সিলেক্ট করুন:", reply_markup=get_inline_menu(), parse_mode="Markdown")
             
         elif query == "gen_name":
-            first_names = ["Md.", "Nazmul", "Rakibul", "Tanvir", "Sojib", "Imran", "Farhan", "Sumaiya", "Nusrat", "Ayesha"]
-            last_names = ["Hossain", "Islam", "Ahmed", "Khan", "Chowdhury", "Talukder", "Sarker"]
+            first_names = ["Md.", "Nazmul", "Rakibul", "Tanvir", "Sojib", "Imran", "Farhan", "Sumaiya", "Nusrat", "Ayesha", "Jannat", "Sakib", "Mehedi"]
+            last_names = ["Hossain", "Islam", "Ahmed", "Khan", "Chowdhury", "Talukder", "Sarker", "Mahmud", "Ali", "Rahman"]
             gen_name = f"{random.choice(first_names)} {random.choice(last_names)}"
             bot.answer_callback_query(call.id, "রেন্ডম নাম তৈরি করা হয়েছে!")
             bot.send_message(chat_id, f"👤 **আপনার নতুন ফেক নাম:**\n`{gen_name}`", parse_mode="Markdown")
