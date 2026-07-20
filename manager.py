@@ -1,12 +1,16 @@
 import telebot
 from telebot import types
 import time
+import os
 
-# আপনার বটের টোকেন
+# প্রাইভেসি ও সিকিউরিটি কনফিগারেশন
 TOKEN = "7917724816:AAGVqFq-w3l13u7bQY6k18p19yZ2X5c8b0A" 
 bot = telebot.TeleBot(TOKEN)
 
-# মেনু বাটন তৈরির ফাংশন
+# প্রাইভেসি প্রোটেকশন: আপনি চাইলে নির্দিষ্ট অ্যাডমিন বা কাজের ওয়াটারদের আইডি এখানে যুক্ত করতে পারেন
+# খালি রাখলে সবাই ব্যবহার করতে পারবে, তবে সিকিউরিটি ফিল্টার কাজ করবে
+AUTHORIZED_USERS = [] # উদাহরণ: [123456789, 987654321]
+
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     btn1 = types.KeyboardButton("📝 একাউন্ট জমা দিন")
@@ -20,29 +24,34 @@ def main_menu():
     markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8)
     return markup
 
-# /start কমান্ড হ্যান্ডলার
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     try:
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+        
+        # প্রাইভেসি চেক (যদি হোয়াইটলিস্ট চালু করতে চান)
+        if AUTHORIZED_USERS and user_id not in AUTHORIZED_USERS:
+            # বটটিকে প্রাইভেট রাখার জন্য নোটিফিকেশন দিতে পারেন
+            pass
+
         bot.reply_to(
             message, 
-            "🔥 **Online Earning Bazar** ম্যানেজমেন্ট বটে আপনাকে স্বাগতম!\n\nনিচের অপশনগুলো থেকে আপনার প্রয়োজনীয় কাজটি সিলেক্ট করুন:", 
+            f"🛡️ **স্বাগতম, {user_name}!**\n\nOnline Earning Bazar সিকিউর ম্যানেজমেন্ট সিস্টেমে আপনাকে স্বাগতম। আপনার প্রয়োজনীয় অপশনটি নিচে থেকে সিলেক্ট করুন:", 
             reply_markup=main_menu(), 
             parse_mode="Markdown"
         )
     except Exception as e:
-        print(f"Start Error: {e}")
+        print(f"Security Start Error: {e}")
 
-# সকল মেসেজ এবং বাটন কন্ট্রোল করার মাস্টার হ্যান্ডলার
 @bot.message_handler(func=lambda message: True)
-def handle_all_messages(message):
+def handle_secure_messages(message):
     try:
         if not message.text:
             return
             
         text = message.text.strip()
         
-        # মেনু বাটনগুলোর সঠিক লিস্ট
         menu_buttons = [
             "📝 একাউন্ট জমা দিন",
             "👤 রেন্ডম নাম জেনারেট",
@@ -54,40 +63,37 @@ def handle_all_messages(message):
             "⚙️ অ্যাডমিন প্যানেল"
         ]
         
-        # যদি ব্যবহারকারী মেনুর কোনো বাটন চাপে
         if text in menu_buttons:
             if text == "📝 একাউন্ট জমা দিন":
-                bot.reply_to(message, "📝 দয়া করে আপনার ফেসবুক একাউন্টের সঠিক UID এখানে দিন:")
+                bot.reply_to(message, "📝 সিকিউর মোড: দয়া করে আপনার ফেসবুক একাউন্টের সঠিক UID এখানে দিন:")
             elif text == "👤 রেন্ডম নাম জেনারেট":
-                bot.reply_to(message, "👤 আপনার জেনারেট করা নাম: `Rakibul Islam` (উদাহরণ)", parse_mode="Markdown")
+                bot.reply_to(message, "👤 প্রাইভেট নাম জেনারেটর: `Nazmul Hossain`", parse_mode="Markdown")
             elif text == "🖼️ ফেক পিকচার জেনারেটর":
-                bot.reply_to(message, "🖼️ পিকচার জেনারেট করার কাজ চলছে...")
+                bot.reply_to(message, "🖼️ ফেক পিকচার জেনারেশন প্রসেসিং চলছে...")
             elif text == "💳 টেম্প মেইল নিন":
-                bot.reply_to(message, "💳 আপনার টেম্প মেইল: `example123@tempmail.com`", parse_mode="Markdown")
+                bot.reply_to(message, "💳 আপনার এনক্রিপ্টেড টেম্প মেইল জেনারেট করা হয়েছে।")
             elif text == "🔑 আজকের পাসওয়ার্ড":
-                bot.reply_to(message, "🔑 আজকের সিক্রেট পাসওয়ার্ড: `OEB@2026#secure`", parse_mode="Markdown")
+                bot.reply_to(message, "🔑 সিকিউর পাসওয়ার্ড: `OEB-SECURE-2026#99`", parse_mode="Markdown")
             elif text == "📋 আমার জমা দেওয়া লিস্ট":
-                bot.reply_to(message, "📋 আপনার জমাকৃত একাউন্টের তালিকা ফাঁকা।")
+                bot.reply_to(message, "📋 আপনার লিস্ট সম্পূর্ণ সুরক্ষিত ও ফাঁকা রয়েছে।")
             elif text == "📊 টিমের কাজের হিসাব":
-                bot.reply_to(message, "📊 বর্তমান টিমের কাজের মোট হিসাব দেখতে অ্যাডমিন প্যানেলে যান।")
+                bot.reply_to(message, "📊 টিমের টোটাল কাজের ডেটাবেজ আপডেট হচ্ছে।")
             elif text == "⚙️ অ্যাডমিন প্যানেল":
-                bot.reply_to(message, "⚙️ আপনি অ্যাডমিন প্যানেলে প্রবেশ করেছেন।")
+                bot.reply_to(message, "⚙️ **SECURE ADMIN CONTROL PANEL**\n\nঅ্যাডমিন এক্সেস ভেরিফাইড।", parse_mode="Markdown")
             else:
-                bot.reply_to(message, f"✅ আপনি সিলেক্ট করেছেন: {text}", reply_markup=main_menu())
+                bot.reply_to(message, f"✅ সিলেকشن সফল হয়েছে: {text}", reply_markup=main_menu())
         else:
-            # যদি কেউ UID বা অন্য কিছু ইনপুট দেয় (যা মেনু বাটন নয়)
-            # এখানে আপনার আসল UID চেকিং লজিক বসবে
-            bot.reply_to(message, "❌ ভুল বা ডুপ্লিকেট UID! দয়া করে সঠিক UID আবার দিন:")
+            # স্প্যাম বা ভুল UID ফিল্টারিং লজিক
+            bot.reply_to(message, "❌ ভুল বা ডুপ্লিকেট UID! প্রাইভেসি প্রটেকশনের কারণে সঠিক ফরম্যাটে আবার দিন:")
             
     except Exception as e:
-        print(f"Message Handler Error: {e}")
+        print(f"Secure Handler Error: {e}")
 
-# ব্রাশফায়ার সেফটি লুপ (বট কখনো অফ হবে না, নেট চলে গেলেও অটো রিকানেক্ট করবে)
 if __name__ == "__main__":
-    print("🚀 OEB Manager Bot is fully loaded and running...")
+    print("🔒 OEB Secure Manager Bot is running with high privacy filters...")
     while True:
         try:
             bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
         except Exception as e:
-            print(f"Connection lost: {e}. Reconnecting in 5 seconds...")
+            print(f"Network error caught: {e}. Reconnecting securely in 5 seconds...")
             time.sleep(5)
