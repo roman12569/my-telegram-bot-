@@ -5,10 +5,11 @@ import random
 import json
 import os
 
+# আপনার বটের টোকেন
 TOKEN = "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4" 
 bot = telebot.TeleBot(TOKEN)
 
-# ডেটা স্টোরেজ ফাইল
+# ডেটা স্টোরেজ ফাইল পাথ
 DATA_FILE = "submissions.json"
 
 def load_data():
@@ -16,7 +17,7 @@ def load_data():
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             try:
                 return json.load(f)
-            except:
+            except Exception:
                 return {}
     return {}
 
@@ -24,7 +25,7 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# মূল ইনলাইন মেনু (প্রিমিয়াম ডিজাইন)
+# প্রিমিয়াম ইনলাইন মেনু ডিজাইন
 def get_inline_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn1 = types.InlineKeyboardButton("📝 একাউন্ট জমা দিন", callback_data="submit_acc")
@@ -38,7 +39,7 @@ def get_inline_menu():
     markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8)
     return markup
 
-# /start কমান্ড হ্যান্ডলার (চ্যানেল ভেরিফিকেশন সহ)
+# /start কমান্ড হ্যান্ডলার
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     try:
@@ -59,9 +60,10 @@ def send_welcome(message):
     except Exception as e:
         print(f"Start Error: {e}")
 
-# ইনলাইন বাটন এবং স্টেপ ম্যানেজমেন্ট হ্যান্ডলার
+# ইউজার স্টেপ ট্র্যাক করার ডিকশনারি
 user_states = {}
 
+# ইনলাইন বাটন কলব্যাক হ্যান্ডলার
 @bot.callback_query_handler(func=lambda call: True)
 def handle_inline_buttons(call):
     try:
@@ -71,7 +73,12 @@ def handle_inline_buttons(call):
         
         if query == "verify_join":
             bot.answer_callback_query(call.id, "✅ ভেরিফিকেশন সফল হয়েছে!")
-            bot.send_message(chat_id, "🔥 **Online Earning Bazar** ড্যাশবোর্ডে স্বাগতম!\n\nআপনার প্রয়োজনীয় অপশনটি নিচে থেকে সিলেক্ট করুন:", reply_markup=get_inline_menu(), parse_mode="Markdown")
+            bot.send_message(
+                chat_id, 
+                "🔥 **Online Earning Bazar** ড্যাশবোর্ডে স্বাগতম!\n\nআপনার প্রয়োজনীয় অপশনটি নিচে থেকে সিলেক্ট করুন:", 
+                reply_markup=get_inline_menu(), 
+                parse_mode="Markdown"
+            )
             
         elif query == "gen_name":
             first_names = ["Md.", "Nazmul", "Rakibul", "Tanvir", "Sojib", "Imran", "Farhan", "Sumaiya", "Nusrat", "Ayesha", "Jannat", "Sakib", "Mehedi"]
@@ -125,7 +132,7 @@ def handle_inline_buttons(call):
     except Exception as e:
         print(f"Callback Error: {e}")
 
-# টেক্সট ইনপুট হ্যান্ডলার (UID রিসিভ করার জন্য)
+# টেক্সট মেসেজ এবং UID ইনপুট হ্যান্ডলার
 @bot.message_handler(func=lambda message: True)
 def handle_text_inputs(message):
     try:
@@ -133,22 +140,21 @@ def handle_text_inputs(message):
         if user_id in user_states and user_states[user_id] == "waiting_for_uid":
             text = message.text.strip()
             
-            # ডেটা সেভ করা
             data = load_data()
             if user_id not in data:
                 data[user_id] = []
             data[user_id].append(text)
             save_data(data)
             
-            user_states[user_id] = None # স্টেট রিসেট
-            bot.reply_to(message, "✅ সফলভাবে আপনার UID জমা হয়েছে! ধন্যবাদ।")
+            user_states[user_id] = None 
+            bot.reply_to(message, "✅ সফলভাবে আপনার UID জমা হয়েছে এবং ডেটাবেজে সেভ করা হয়েছে!")
         else:
-            bot.reply_to(message, "দয়া করে নিচের মেনু বাটনগুলো ব্যবহার করুন অথবা /start কমান্ড দিন।")
+            bot.reply_to(message, "দয়া করে উপরের ইনলাইন মেনু বাটনগুলো ব্যবহার করুন অথবা /start কমান্ড দিন।")
     except Exception as e:
         print(f"Text Input Error: {e}")
 
 if __name__ == "__main__":
-    print("🚀 OEB Final Clean Bot is running smoothly...")
+    print("🚀 OEB Final Stable Bot is running...")
     while True:
         try:
             bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
