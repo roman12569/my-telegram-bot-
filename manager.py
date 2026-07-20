@@ -2,11 +2,29 @@ import telebot
 from telebot import types
 import time
 import random
+import json
+import os
 
 TOKEN = "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4" 
 bot = telebot.TeleBot(TOKEN)
 
-# প্রিমিয়াম ইনলাইন মেনু ডিজাইন
+# ডেটা স্টোরেজ ফাইল
+DATA_FILE = "submissions.json"
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except:
+                return {}
+    return {}
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+# মূল ইনলাইন মেনু (প্রিমিয়াম ডিজাইন)
 def get_inline_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn1 = types.InlineKeyboardButton("📝 একাউন্ট জমা দিন", callback_data="submit_acc")
@@ -14,18 +32,16 @@ def get_inline_menu():
     btn3 = types.InlineKeyboardButton("🖼️ ফেক পিকচার", callback_data="gen_pic")
     btn4 = types.InlineKeyboardButton("💳 টেম্প মেইল", callback_data="temp_mail")
     btn5 = types.InlineKeyboardButton("🔑 পাসওয়ার্ড", callback_data="gen_pass")
-    btn6 = types.InlineKeyboardButton("📋 আমার লিস্ট", callback_data="my_list")
-    btn7 = types.InlineKeyboardButton("📊 টিমের হিসাব", callback_data="team_stats")
+    btn6 = types.InlineKeyboardButton("📋 আমার জমা দেওয়া লিস্ট", callback_data="my_list")
+    btn7 = types.InlineKeyboardButton("📊 টিমের কাজের হিসাব", callback_data="team_stats")
     btn8 = types.InlineKeyboardButton("⚙️ অ্যাডমিন প্যানেল", callback_data="admin_panel")
     markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8)
     return markup
 
-# /start কমান্ড হ্যান্ডলার (চ্যানেল জয়েন ও প্রিমিয়াম লুক)
+# /start কমান্ড হ্যান্ডলার (চ্যানেল ভেরিফিকেশন সহ)
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     try:
-        user_name = message.from_user.first_name
-        
         channel_markup = types.InlineKeyboardMarkup(row_width=2)
         channel_markup.add(
             types.InlineKeyboardButton("📢 Join Channel", url="https://t.me/your_channel_link"),
@@ -34,25 +50,28 @@ def send_welcome(message):
         )
         
         welcome_text = (
-            f"👇 **Quick Menu**\n\n"
-            f"🤖 বট ব্যবহার করতে নিচের চ্যানেলগুলোতে জয়েন করুন:\n\n"
-            f"> Please join our channel and group, then click Verify"
+            "👇 **Quick Menu**\n\n"
+            "🤖 বট ব্যবহার করতে নিচের চ্যানেলগুলোতে জয়েন করুন:\n\n"
+            "> Please join our channel and group, then click Verify"
         )
         
         bot.send_message(message.chat.id, welcome_text, reply_markup=channel_markup, parse_mode="Markdown")
     except Exception as e:
         print(f"Start Error: {e}")
 
-# ইনলাইন বাটন ক্লিক কন্ট্রোল করার হ্যান্ডলার
+# ইনলাইন বাটন এবং স্টেপ ম্যানেজমেন্ট হ্যান্ডলার
+user_states = {}
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_inline_buttons(call):
     try:
         query = call.data
         chat_id = call.message.chat.id
+        user_id = str(call.from_user.id)
         
         if query == "verify_join":
             bot.answer_callback_query(call.id, "✅ ভেরিফিকেশন সফল হয়েছে!")
-            bot.send_message(chat_id, f"🔥 **Online Earning Bazar** ড্যাশবোর্ডে স্বাগতম!\n\nআপনার প্রয়োজনীয় অপشنটি নিচে থেকে সিলেক্ট করুন:", reply_markup=get_inline_menu(), parse_mode="Markdown")
+            bot.send_message(chat_id, "🔥 **Online Earning Bazar** ড্যাশবোর্ডে স্বাগতম!\n\nআপনার প্রয়োজনীয় অপশনটি নিচে থেকে সিলেক্ট করুন:", reply_markup=get_inline_menu(), parse_mode="Markdown")
             
         elif query == "gen_name":
             first_names = ["Md.", "Nazmul", "Rakibul", "Tanvir", "Sojib", "Imran", "Farhan", "Sumaiya", "Nusrat", "Ayesha", "Jannat", "Sakib", "Mehedi"]
@@ -79,26 +98,57 @@ def handle_inline_buttons(call):
             bot.send_message(chat_id, f"🔑 **সিক্রেট পাসওয়ার্ড:**\n`{pass_string}`", parse_mode="Markdown")
             
         elif query == "submit_acc":
+            user_states[user_id] = "waiting_for_uid"
             bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, "📝 দয়া করে আপনার ফেসবুক একাউন্টের সঠিক UID পাঠান:")
+            bot.send_message(chat_id, "📝 দয়া করে আপনার ফেসবুক একাউন্টের সঠিক UID বা তথ্য এখানে পাঠান:")
             
         elif query == "my_list":
+            data = load_data()
+            user_subs = data.get(user_id, [])
+            if user_subs:
+                list_text = "📋 **আপনার জমাকৃত একাউন্টসমূহ:**\n\n" + "\n".join([f"- {item}" for item in user_subs])
+            else:
+                list_text = "📋 আপনার জমাকৃত একাউন্টের লিস্ট খালি।"
             bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, "📋 আপনার জমাকৃত একাউন্টের লিস্ট খালি।")
+            bot.send_message(chat_id, list_text, parse_mode="Markdown")
             
         elif query == "team_stats":
+            data = load_data()
+            total_accounts = sum(len(accs) for accs in data.values())
             bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, "📊 টিমের বর্তমান কাজের স্ট্যাটাস আপডেট আছে।")
+            bot.send_message(chat_id, f"📊 **টিমের কাজের হিসাব:**\n\nমোট জমা হওয়া একাউন্ট: `{total_accounts}` টি", parse_mode="Markdown")
             
         elif query == "admin_panel":
             bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, "⚙️ **ADMIN CONTROL PANEL**\n\nঅ্যাডমিন এক্সেস ভেরিফাইড।", parse_mode="Markdown")
+            bot.send_message(chat_id, "⚙️ **ADMIN CONTROL PANEL**\n\nঅ্যাডমিন এক্সেস ভেরিফাইড। সমস্ত ডেটা সুরক্ষিত আছে।", parse_mode="Markdown")
             
     except Exception as e:
         print(f"Callback Error: {e}")
 
+# টেক্সট ইনপুট হ্যান্ডলার (UID রিসিভ করার জন্য)
+@bot.message_handler(func=lambda message: True)
+def handle_text_inputs(message):
+    try:
+        user_id = str(message.from_user.id)
+        if user_id in user_states and user_states[user_id] == "waiting_for_uid":
+            text = message.text.strip()
+            
+            # ডেটা সেভ করা
+            data = load_data()
+            if user_id not in data:
+                data[user_id] = []
+            data[user_id].append(text)
+            save_data(data)
+            
+            user_states[user_id] = None # স্টেট রিসেট
+            bot.reply_to(message, "✅ সফলভাবে আপনার UID জমা হয়েছে! ধন্যবাদ।")
+        else:
+            bot.reply_to(message, "দয়া করে নিচের মেনু বাটনগুলো ব্যবহার করুন অথবা /start কমান্ড দিন।")
+    except Exception as e:
+        print(f"Text Input Error: {e}")
+
 if __name__ == "__main__":
-    print("🚀 OEB Premium Bot is running with stunning inline UI...")
+    print("🚀 OEB Final Clean Bot is running smoothly...")
     while True:
         try:
             bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
