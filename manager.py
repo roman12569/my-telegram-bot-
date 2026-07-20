@@ -4,7 +4,7 @@ import time
 import os
 
 # প্রাইভেসি ও সিকিউরিটি কনফিগারেশন
-TOKEN = "7917724816:AAGVqFq-w3l13u7bQY6k18p19yZ2X5c8b0A" 
+TOKEN = '8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4'
 bot = telebot.TeleBot(TOKEN)
 
 # প্রাইভেসি প্রোটেকশন: আপনি চাইলে নির্দিষ্ট অ্যাডমিন বা কাজের ওয়াটারদের আইডি এখানে যুক্ত করতে পারেন
