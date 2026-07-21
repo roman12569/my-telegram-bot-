@@ -401,6 +401,10 @@ def handle_all_callbacks(call):
             user_states[chat_id] = {'step': 'AWAITING_WITHDRAW_DETAILS'}
             bot.send_message(chat_id, "💳 Enter Bkash/Nagad number & Amount (e.g. `01700000000 | 100`):", reply_markup=cancel_keyboard(chat_id))
 
+    elif code == "set_my_password":
+        user_states[chat_id] = {'step': 'AWAITING_USER_CUSTOM_PASS'}
+        bot.send_message(chat_id, "🔑 **Enter your custom working password:**\n\n(This password will auto-apply to all your future submissions until you change it again)", reply_markup=cancel_keyboard(chat_id))
+
 # ================= MAIN ROUTER HANDLER =================
 
 @bot.message_handler(func=lambda msg: True)
@@ -440,6 +444,7 @@ def main_router(message):
         daily_c = get_user_daily_count(worker_name)
         total_c = get_user_total_count(worker_name)
         balance = user_balances.get(chat_id, 0.0)
+        saved_pass = user_passwords.get(chat_id, f"Not Set (Default: {pass_rule})")
         bot_uname = bot.get_me().username
         ref_link = f"https://t.me/{bot_uname}?start={chat_id}"
 
@@ -447,6 +452,7 @@ def main_router(message):
             msg_str = (
                 "👤 **WORKER PROFILE & DASHBOARD**\n───────────────\n"
                 f"🔹 **Name:** `{worker_name}`\n"
+                f"🔹 **Saved Password:** `{saved_pass}`\n"
                 f"🔹 **Submitted Today:** `{daily_c}` pcs\n"
                 f"🔹 **Total Submissions:** `{total_c}` pcs\n"
                 f"💰 **Current Balance:** `৳{balance:.2f}`\n\n"
@@ -456,6 +462,7 @@ def main_router(message):
             msg_str = (
                 "👤 **ওয়ার্কার প্রোফাইল ও ড্যাশবোর্ড**\n───────────────\n"
                 f"🔹 **নাম:** `{worker_name}`\n"
+                f"🔹 **সেভ করা পাসওয়ার্ড:** `{saved_pass}`\n"
                 f"🔹 **আজকের জমা:** `{daily_c}` টি\n"
                 f"🔹 **সর্বমোট জমা:** `{total_c}` টি\n"
                 f"💰 **বর্তমান ব্যালেন্স:** `৳{balance:.2f}`\n\n"
@@ -465,6 +472,7 @@ def main_router(message):
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton("💳 Withdraw Money / টাকা তুলুন", callback_data="prof_withdraw"),
+            InlineKeyboardButton("🔑 Set My Password / পাসওয়ার্ড সেভ", callback_data="set_my_password"),
             InlineKeyboardButton("🌐 Change Language", callback_data="change_lang")
         )
         bot.send_message(chat_id, msg_str, reply_markup=markup)
@@ -539,7 +547,8 @@ def main_router(message):
         return
 
     elif text in ["⚙️ Password Rules", "⚙️ পাসওয়ার্ড নিয়ম"]:
-        bot.send_message(chat_id, f"🔑 **Current Password Rule:** `{pass_rule}`")
+        custom_p = user_passwords.get(chat_id, "Not Set")
+        bot.send_message(chat_id, f"🔑 **Your Saved Password:** `{custom_p}`\n⚙️ **Global Rule:** `{pass_rule}`\n\n💡 *Your saved password will auto-apply during submissions!*")
         return
 
     # 4. Helper Tools Triggers
@@ -677,6 +686,12 @@ def main_router(message):
                             pass
         bot.send_message(chat_id, f"✅ Sent to {count} users.", reply_markup=admin_bottom_keyboard())
 
+    # User Custom Password Save State
+    elif step == 'AWAITING_USER_CUSTOM_PASS':
+        user_passwords[chat_id] = text
+        user_states.pop(chat_id, None)
+        bot.send_message(chat_id, f"✅ **Password Saved Successfully!**\n\nYour working password is set to: `{text}`\nIt will now auto-apply whenever you submit accounts.", reply_markup=main_bottom_keyboard(chat_id))
+
     # Standalone UID Live/Dead Checker State
     elif step == 'AWAITING_CHECK_UID':
         user_states.pop(chat_id, None)
@@ -750,11 +765,17 @@ def main_router(message):
         success_count, total_earned = 0, 0.0
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         worker_name = message.from_user.first_name or "Worker"
+        default_worker_pass = user_passwords.get(chat_id, f"Pass_{pass_rule}")
 
         for line in lines:
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) == 3:
-                uid, password, payload = parts[0], parts[1], parts[2]
+            if len(parts) >= 2:
+                if len(parts) == 2:
+                    uid, payload = parts[0], parts[1]
+                    password = default_worker_pass
+                else:
+                    uid, password, payload = parts[0], parts[1], parts[2]
+
                 clean_uid = extract_numeric_uid(uid)
                 if clean_uid and not is_duplicate_uid(clean_uid):
                     is_live, _ = check_live_account(clean_uid)
@@ -812,7 +833,7 @@ def main_router(message):
             "─────────────────────────\n"
             f"📌 **Tracking ID:** `{track_id}`\n"
             f"🆔 **UID:** `{uid}`\n"
-            f"🔑 **Password:** `{password}`\n"
+            f"🔑 **Password (Auto-Applied):** `{password}`\n"
             f"🛡️ **Payload Type:** `{'Cookies' if 'cookie' in cat else '2FA Key'}`\n"
             f"💰 **Earned Balance:** ৳{rate:.2f}"
         )
