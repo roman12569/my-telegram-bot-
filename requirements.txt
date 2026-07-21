@@ -2,4 +2,6 @@ pyTelegramBotAPI
 pyotp
 gspread
 oauth2client
+pandas
+openpyxl
 requests
