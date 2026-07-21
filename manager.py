@@ -39,7 +39,7 @@ bulk_submit_active = True
 pass_rule = "20"
 MIN_WITHDRAW = 50.0
 
-# Memory Stores
+# Global System Caches
 user_passwords = {}
 user_states = {}
 user_balances = {}
@@ -236,7 +236,7 @@ def cancel_keyboard(chat_id):
     markup.add(KeyboardButton(btn_txt))
     return markup
 
-# ================= START & BASE COMMANDS =================
+# ================= START COMMAND =================
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -260,10 +260,130 @@ def send_welcome(message):
     txt = "👑 **ONLINE EARNING BAZAR**\n───────────────\nWelcome to official automation panel.\nSelect option from bottom keyboard." if lang == 'en' else "👑 **ONLINE EARNING BAZAR**\n───────────────\nস্বাগতম! এটি আমাদের অফিশিয়াল অটোমেশন প্যানেল।\nনিচের কিবোর্ড থেকে কাজ সিলেক্ট করুন।"
     bot.send_message(chat_id, txt, reply_markup=main_bottom_keyboard(chat_id))
 
-# ================= ROUTING HANDLERS =================
+# ================= DOCUMENT / EXCEL HANDLER =================
+
+@bot.message_handler(content_types=['document'])
+def handle_excel_document(message):
+    chat_id = message.chat.id
+    state = user_states.get(chat_id)
+    
+    if state and state.get('step') == 'AWAITING_EXCEL_FILE':
+        if not bulk_submit_active:
+            bot.send_message(chat_id, "⚠️ File submit mode is disabled!", reply_markup=main_bottom_keyboard(chat_id))
+            return
+
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            file_name = message.document.file_name
+
+            with open(file_name, 'wb') as new_file:
+                new_file.write(downloaded_file)
+
+            if file_name.endswith('.csv'):
+                df = pd.read_csv(file_name, dtype=str)
+            else:
+                df = pd.read_excel(file_name, dtype=str)
+
+            df = df.fillna('')
+            success_count, total_earned = 0, 0.0
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            worker_name = message.from_user.first_name or "Worker"
+
+            for _, row in df.iterrows():
+                row_vals = [str(x).strip() for x in row.values]
+                if len(row_vals) >= 3:
+                    uid, password, payload = row_vals[0], row_vals[1], row_vals[2]
+                    clean_uid = extract_numeric_uid(uid)
+                    if clean_uid and not is_duplicate_uid(clean_uid):
+                        track_id = generate_tracking_id()
+                        rate = RATES["fb_cookie"] if is_valid_cookies(payload) else RATES["fb_2fa"]
+                        tab = "Cookies_Data" if is_valid_cookies(payload) else "2FA_Data"
+                        
+                        async_save_to_sheet(tab, [now_str, track_id, str(chat_id), clean_uid, password, payload])
+                        with open("accounts_list.csv", "a", newline="", encoding="utf-8-sig") as file:
+                            writer = csv.writer(file)
+                            if not os.path.isfile("accounts_list.csv") or os.stat("accounts_list.csv").st_size == 0:
+                                writer.writerow(["Date & Time", "Tracking ID", "Worker Name", "UID", "Password", "2FA/Cookies"])
+                            writer.writerow([now_str, track_id, worker_name, clean_uid, password, payload])
+                        
+                        success_count += 1
+                        total_earned += rate
+
+            if os.path.exists(file_name):
+                os.remove(file_name)
+
+            user_balances[chat_id] = user_balances.get(chat_id, 0.0) + total_earned
+            user_states.pop(chat_id, None)
+            bot.reply_to(message, f"🎉 **Excel Processed!**\n\n✅ Added: **{success_count}** pcs\n💰 Credited: ৳{total_earned:.2f}", reply_markup=submission_bottom_keyboard(chat_id))
+        
+        except Exception:
+            bot.reply_to(message, "❌ Failed to process file! Make sure it is a valid .xlsx or .csv file.")
+
+# ================= CALLBACKS HANDLER =================
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_all_callbacks(call):
+    chat_id = call.message.chat.id
+    code = call.data
+    bot.answer_callback_query(call.id)
+
+    if code in ["set_lang_en", "set_lang_bn"]:
+        user_languages[chat_id] = 'en' if code == "set_lang_en" else 'bn'
+        bot.delete_message(chat_id, call.message.message_id)
+        if not check_force_join(chat_id):
+            bot.send_message(chat_id, "🔒 **Channel Verification Required:**", reply_markup=force_join_keyboard())
+        else:
+            bot.send_message(chat_id, "👑 Welcome to **ONLINE EARNING BAZAR**!", reply_markup=main_bottom_keyboard(chat_id))
+        return
+
+    elif code == "change_lang":
+        bot.send_message(chat_id, "🌐 **Select Language:**", reply_markup=language_selection_keyboard())
+        return
+
+    elif code == "verify_join":
+        if check_force_join(chat_id):
+            bot.delete_message(chat_id, call.message.message_id)
+            bot.send_message(chat_id, "✅ Verification successful!", reply_markup=main_bottom_keyboard(chat_id))
+        else:
+            bot.send_message(chat_id, "❌ You haven't joined all required channels yet!")
+        return
+
+    elif code.startswith("inbox_"):
+        parts = code.split("_")
+        username, domain = parts[1], parts[2]
+        url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={username}&domain={domain}"
+        try:
+            res = requests.get(url, timeout=10).json()
+            if not res:
+                bot.answer_callback_query(call.id, "📭 Inbox empty!", show_alert=True)
+                return
+            msg_id = res[0]['id']
+            msg_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={username}&domain={domain}&id={msg_id}"
+            body = requests.get(msg_url, timeout=10).json().get('textBody', 'No Content')
+            bot.send_message(chat_id, f"💬 **Content/OTP:**\n`{body}`")
+        except Exception:
+            bot.answer_callback_query(call.id, "❌ Error checking inbox!", show_alert=True)
+
+    elif code.startswith("rate_") and chat_id == ADMIN_ID:
+        selected_cat = code.replace("rate_", "")
+        user_states[chat_id] = {'step': 'AWAITING_CAT_RATE', 'cat': selected_cat}
+        bot.send_message(chat_id, f"💰 Enter new price for `{selected_cat}` (e.g. 6.5):", reply_markup=cancel_keyboard(chat_id))
+
+    elif code == "prof_withdraw":
+        balance = user_balances.get(chat_id, 0.0)
+        if balance < MIN_WITHDRAW:
+            bot.send_message(chat_id, f"⚠️ Min withdraw: ৳{MIN_WITHDRAW:.2f}. Your balance: ৳{balance:.2f}")
+        else:
+            user_states[chat_id] = {'step': 'AWAITING_WITHDRAW_DETAILS'}
+            bot.send_message(chat_id, "💳 Enter Bkash/Nagad number & Amount (e.g. `01700000000 | 100`):", reply_markup=cancel_keyboard(chat_id))
+
+# ================= MAIN ROUTER HANDLER =================
 
 @bot.message_handler(func=lambda msg: True)
 def main_router(message):
+    global single_submit_active, bulk_submit_active, pass_rule
+    
     chat_id = message.chat.id
     text = message.text.strip() if message.text else ""
     lang = user_languages.get(chat_id, 'en')
@@ -293,7 +413,7 @@ def main_router(message):
 
     elif text in ["👤 My Profile", "👤 আমার প্রোফাইল"]:
         user_states.pop(chat_id, None)
-        worker_name = message.from_user.first_name
+        worker_name = message.from_user.first_name or "Worker"
         daily_c = get_user_daily_count(worker_name)
         total_c = get_user_total_count(worker_name)
         balance = user_balances.get(chat_id, 0.0)
@@ -446,13 +566,11 @@ def main_router(message):
         return
 
     elif "Single Mode" in text and chat_id == ADMIN_ID:
-        global single_submit_active
         single_submit_active = not single_submit_active
         bot.send_message(chat_id, f"Single Mode: {'ON 🟢' if single_submit_active else 'OFF 🔴'}", reply_markup=admin_bottom_keyboard())
         return
 
     elif "Bulk Mode" in text and chat_id == ADMIN_ID:
-        global bulk_submit_active
         bulk_submit_active = not bulk_submit_active
         bot.send_message(chat_id, f"Bulk Mode: {'ON 🟢' if bulk_submit_active else 'OFF 🔴'}", reply_markup=admin_bottom_keyboard())
         return
@@ -541,7 +659,7 @@ def main_router(message):
                 user_balances[chat_id] -= amt
                 user_states.pop(chat_id, None)
                 bot.send_message(chat_id, f"✅ Withdraw requested: ৳{amt:.2f} ({num})", reply_markup=main_bottom_keyboard(chat_id))
-                bot.send_message(ADMIN_ID, f"🔔 **NEW WITHDRAW REQUEST:**\n👤 User: `{message.from_user.first_name}` (`{chat_id}`)\n📞 Phone: `{num}`\n💰 Amount: ৳{amt:.2f}")
+                bot.send_message(ADMIN_ID, f"🔔 **NEW WITHDRAW REQUEST:**\n👤 User: `{message.from_user.first_name or 'Worker'}` (`{chat_id}`)\n📞 Phone: `{num}`\n💰 Amount: ৳{amt:.2f}")
             else:
                 bot.send_message(chat_id, f"❌ Invalid Amount! Bal: ৳{current_bal:.2f}, Min: ৳{MIN_WITHDRAW:.2f}")
         else:
@@ -584,7 +702,7 @@ def main_router(message):
         lines = text.split("\n")
         success_count, total_earned = 0, 0.0
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        worker_name = message.from_user.first_name
+        worker_name = message.from_user.first_name or "Worker"
 
         for line in lines:
             parts = [p.strip() for p in line.split("|")]
@@ -614,7 +732,7 @@ def main_router(message):
         cat = state.get('category', 'fb_cookie')
         uid = state.get('uid')
         password = user_passwords.get(chat_id, f"Pass_{pass_rule}")
-        worker_name = message.from_user.first_name
+        worker_name = message.from_user.first_name or "Worker"
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if "cookie" in cat and not is_valid_cookies(text):
@@ -640,123 +758,6 @@ def main_router(message):
         bot.send_message(chat_id, f"🎉 **Submission Successful!**\n\n📌 **Tracking ID:** `{track_id}`\n📌 **UID:** `{uid}`\n💰 Credited: ৳{rate:.2f}", reply_markup=submission_bottom_keyboard(chat_id))
         user_states.pop(chat_id, None)
 
-# ================= DOCUMENT / EXCEL FILE HANDLER =================
-
-@bot.message_handler(content_types=['document'])
-def handle_excel_document(message):
-    chat_id = message.chat.id
-    state = user_states.get(chat_id)
-    
-    if state and state.get('step') == 'AWAITING_EXCEL_FILE':
-        if not bulk_submit_active:
-            bot.send_message(chat_id, "⚠️ File submit mode is disabled!", reply_markup=main_bottom_keyboard(chat_id))
-            return
-
-        try:
-            file_info = bot.get_file(message.document.file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            file_name = message.document.file_name
-
-            with open(file_name, 'wb') as new_file:
-                new_file.write(downloaded_file)
-
-            if file_name.endswith('.csv'):
-                df = pd.read_csv(file_name, dtype=str)
-            else:
-                df = pd.read_excel(file_name, dtype=str)
-
-            success_count, total_earned = 0, 0.0
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            worker_name = message.from_user.first_name
-
-            for _, row in df.iterrows():
-                row_vals = [str(x).strip() for x in row.values]
-                if len(row_vals) >= 3:
-                    uid, password, payload = row_vals[0], row_vals[1], row_vals[2]
-                    clean_uid = extract_numeric_uid(uid)
-                    if clean_uid and not is_duplicate_uid(clean_uid):
-                        track_id = generate_tracking_id()
-                        rate = RATES["fb_cookie"] if is_valid_cookies(payload) else RATES["fb_2fa"]
-                        tab = "Cookies_Data" if is_valid_cookies(payload) else "2FA_Data"
-                        
-                        async_save_to_sheet(tab, [now_str, track_id, str(chat_id), clean_uid, password, payload])
-                        with open("accounts_list.csv", "a", newline="", encoding="utf-8-sig") as file:
-                            writer = csv.writer(file)
-                            if not os.path.isfile("accounts_list.csv") or os.stat("accounts_list.csv").st_size == 0:
-                                writer.writerow(["Date & Time", "Tracking ID", "Worker Name", "UID", "Password", "2FA/Cookies"])
-                            writer.writerow([now_str, track_id, worker_name, clean_uid, password, payload])
-                        
-                        success_count += 1
-                        total_earned += rate
-
-            if os.path.exists(file_name):
-                os.remove(file_name)
-
-            user_balances[chat_id] = user_balances.get(chat_id, 0.0) + total_earned
-            user_states.pop(chat_id, None)
-            bot.reply_to(message, f"🎉 **Excel Processed!**\n\n✅ Added: **{success_count}** pcs\n💰 Credited: ৳{total_earned:.2f}", reply_markup=submission_bottom_keyboard(chat_id))
-        
-        except Exception:
-            bot.reply_to(message, "❌ Failed to process file! Make sure it is a valid .xlsx or .csv file.")
-
-# ================= CALLBACKS HANDLER =================
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_all_callbacks(call):
-    chat_id = call.message.chat.id
-    code = call.data
-    bot.answer_callback_query(call.id)
-
-    if code in ["set_lang_en", "set_lang_bn"]:
-        user_languages[chat_id] = 'en' if code == "set_lang_en" else 'bn'
-        bot.delete_message(chat_id, call.message.message_id)
-        if not check_force_join(chat_id):
-            bot.send_message(chat_id, "🔒 **Channel Verification Required:**", reply_markup=force_join_keyboard())
-        else:
-            bot.send_message(chat_id, "👑 Welcome to **ONLINE EARNING BAZAR**!", reply_markup=main_bottom_keyboard(chat_id))
-        return
-
-    elif code == "change_lang":
-        bot.send_message(chat_id, "🌐 **Select Language:**", reply_markup=language_selection_keyboard())
-        return
-
-    elif code == "verify_join":
-        if check_force_join(chat_id):
-            bot.delete_message(chat_id, call.message.message_id)
-            bot.send_message(chat_id, "✅ Verification successful!", reply_markup=main_bottom_keyboard(chat_id))
-        else:
-            bot.send_message(chat_id, "❌ You haven't joined all required channels yet!")
-        return
-
-    elif code.startswith("inbox_"):
-        parts = code.split("_")
-        username, domain = parts[1], parts[2]
-        url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={username}&domain={domain}"
-        try:
-            res = requests.get(url, timeout=10).json()
-            if not res:
-                bot.answer_callback_query(call.id, "📭 Inbox empty!", show_alert=True)
-                return
-            msg_id = res[0]['id']
-            msg_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={username}&domain={domain}&id={msg_id}"
-            body = requests.get(msg_url, timeout=10).json().get('textBody', 'No Content')
-            bot.send_message(chat_id, f"💬 **Content/OTP:**\n`{body}`")
-        except Exception:
-            bot.answer_callback_query(call.id, "❌ Error checking inbox!", show_alert=True)
-
-    elif code.startswith("rate_") and chat_id == ADMIN_ID:
-        selected_cat = code.replace("rate_", "")
-        user_states[chat_id] = {'step': 'AWAITING_CAT_RATE', 'cat': selected_cat}
-        bot.send_message(chat_id, f"💰 Enter new price for `{selected_cat}` (e.g. 6.5):", reply_markup=cancel_keyboard(chat_id))
-
-    elif code == "prof_withdraw":
-        balance = user_balances.get(chat_id, 0.0)
-        if balance < MIN_WITHDRAW:
-            bot.send_message(chat_id, f"⚠️ Min withdraw: ৳{MIN_WITHDRAW:.2f}. Your balance: ৳{balance:.2f}")
-        else:
-            user_states[chat_id] = {'step': 'AWAITING_WITHDRAW_DETAILS'}
-            bot.send_message(chat_id, "💳 Enter Bkash/Nagad number & Amount (e.g. `01700000000 | 100`):", reply_markup=cancel_keyboard(chat_id))
-
 if __name__ == "__main__":
-    print("Single-Router Fast & Crash-Free Bot Started...")
+    print("Single-Router Bug-Free Bot Started...")
     bot.infinity_polling(skip_pending=True)
