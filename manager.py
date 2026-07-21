@@ -20,10 +20,24 @@ CREDENTIALS_FILE = "credentials.json"
 
 bot = telebot.TeleBot(TOKEN)
 
-# Dynamic Settings (Admin Controlled)
-account_rate = 5.0          # ডাইনামিক রেট
-single_submit_active = True  # সিঙ্গেল জমা অন/অফ
-bulk_submit_active = True    # বাল্ক/এক্সেল জমা অন/অফ
+# Mandatory Channels List
+REQUIRED_CHANNELS = [
+    {"name": "Earning Bazar", "username": "@earningbazar0", "url": "https://t.me/earningbazar0"},
+    {"name": "Earning Method", "username": "@onlineearningmethod5", "url": "https://t.me/onlineearningmethod5"},
+    {"name": "Earning Shop", "username": "@onlineearningshop01", "url": "https://t.me/onlineearningshop01"}
+]
+
+# Dynamic Category Rates (Admin Configurable)
+RATES = {
+    "fb_cookie": 5.0,
+    "fb_2fa": 6.0,
+    "ig_cookie": 8.0,
+    "ig_2fa": 10.0
+}
+
+# System Controls
+single_submit_active = True
+bulk_submit_active = True
 pass_rule = "20"
 MIN_WITHDRAW = 50.0
 
@@ -50,13 +64,28 @@ def is_banned(chat_id):
     with open("banned.txt", "r", encoding="utf-8") as f:
         return str(chat_id) in f.read().splitlines()
 
+def check_force_join(user_id):
+    """মেম্বার সব চ্যানেলে জয়েন আছে কিনা চেক করার ফাংশন"""
+    for ch in REQUIRED_CHANNELS:
+        try:
+            member = bot.get_chat_member(ch["username"], user_id)
+            if member.status in ['left', 'kicked']:
+                return False
+        except Exception as e:
+            print(f"Channel check error for {ch['username']}: {e}")
+            return False
+    return True
+
+def generate_tracking_id():
+    return f"#SUB-{random.randint(10000, 99999)}"
+
 def is_duplicate_uid(uid):
     if not os.path.isfile("accounts_list.csv"):
         return False
     with open("accounts_list.csv", "r", encoding="utf-8-sig") as file:
         reader = csv.reader(file)
         for row in reader:
-            if len(row) > 2 and row[2] == uid:
+            if len(row) > 3 and row[3] == uid:
                 return True
     return False
 
@@ -64,7 +93,7 @@ def extract_numeric_uid(text):
     text = str(text).strip()
     if text.isdigit() and 8 <= len(text) <= 20:
         return text
-    match = re.search(r'(?:id=|\/|profile\.php\?id=)(\d{8,20})', text)
+    match = re.search(r'(?:id=|\/|profile\.php\?id=|\/u\/)(\d{8,20})', text)
     return match.group(1) if match else None
 
 def is_valid_2fa_key(key_str):
@@ -73,7 +102,7 @@ def is_valid_2fa_key(key_str):
 
 def is_valid_cookies(cookie_str):
     cookie_str = str(cookie_str)
-    return ("c_user=" in cookie_str) or ("datr=" in cookie_str) or ("xs=" in cookie_str)
+    return ("c_user=" in cookie_str) or ("datr=" in cookie_str) or ("xs=" in cookie_str) or ("sessionid=" in cookie_str)
 
 def get_user_daily_count(worker_name):
     today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -82,7 +111,7 @@ def get_user_daily_count(worker_name):
         with open("accounts_list.csv", "r", encoding="utf-8-sig") as file:
             reader = csv.reader(file)
             for row in reader:
-                if len(row) >= 2 and today in row[0] and worker_name == row[1]:
+                if len(row) >= 3 and today in row[0] and worker_name == row[2]:
                     count += 1
     return count
 
@@ -106,7 +135,14 @@ def save_to_sheet(tab_name, row_data):
             return False
     return False
 
-# ================= UI KEYBOARDS (FANCY STYLED) =================
+# ================= KEYBOARDS & UI =================
+
+def force_join_keyboard():
+    markup = InlineKeyboardMarkup(row_width=1)
+    for ch in REQUIRED_CHANNELS:
+        markup.add(InlineKeyboardButton(f"📢 Join {ch['name']}", url=ch["url"]))
+    markup.add(InlineKeyboardButton("✅ Verified / চেক করুন", callback_data="verify_join"))
+    return markup
 
 def main_bottom_keyboard(chat_id):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -125,6 +161,18 @@ def main_bottom_keyboard(chat_id):
 def cancel_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     markup.add(KeyboardButton("❌ 𝘾𝙖𝙣𝙘𝙚𝙡 / বাতিল"))
+    return markup
+
+def category_selection_keyboard():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton(f"📘 FB Cookies (৳{RATES['fb_cookie']})", callback_data="cat_fb_cookie"),
+        InlineKeyboardButton(f"🔐 FB 2FA (৳{RATES['fb_2fa']})", callback_data="cat_fb_2fa")
+    )
+    markup.add(
+        InlineKeyboardButton(f"📸 IG Cookies (৳{RATES['ig_cookie']})", callback_data="cat_ig_cookie"),
+        InlineKeyboardButton(f"🔐 IG 2FA (৳{RATES['ig_2fa']})", callback_data="cat_ig_2fa")
+    )
     return markup
 
 def inline_submission_menu():
@@ -157,12 +205,12 @@ def inline_admin_menu():
     bulk_status = "🟢" if bulk_submit_active else "🔴"
     
     markup.add(
-        InlineKeyboardButton(f"💰 রেট সেট (এখন ৳{account_rate})", callback_data="adm_set_rate"),
-        InlineKeyboardButton(f"{single_status} সিঙ্গেল জমাToggle", callback_data="adm_toggle_single")
+        InlineKeyboardButton("💰 ক্যাটাগরি রেট সেট", callback_data="adm_rates"),
+        InlineKeyboardButton(f"{single_status} সিঙ্গেল জমা Toggle", callback_data="adm_toggle_single")
     )
     markup.add(
         InlineKeyboardButton(f"{bulk_status} বাল্ক/এক্সেল Toggle", callback_data="adm_toggle_bulk"),
-        InlineKeyboardButton("🔑 পাসওয়ার্ড রুল চেঞ্জ", callback_data="adm_pass_rule")
+        InlineKeyboardButton("🔑 পাসওয়ার্ড নিয়ম চেঞ্জ", callback_data="adm_pass_rule")
     )
     markup.add(
         InlineKeyboardButton("📊 টিমের হিসাব", callback_data="adm_stats"),
@@ -174,7 +222,7 @@ def inline_admin_menu():
     )
     return markup
 
-# ================= START & MAIN COMMANDS =================
+# ================= START & FORCE JOIN CHECK =================
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -182,17 +230,29 @@ def send_welcome(message):
         bot.reply_to(message, "🚫 আপনার অ্যাকাউন্টটি ব্যান করা হয়েছে।")
         return
     
-    user_states.pop(message.chat.id, None)
     save_user(message.chat.id)
+    user_states.pop(message.chat.id, None)
+
+    if not check_force_join(message.chat.id):
+        text = (
+            "🔒 **বট ব্যবহার করতে আমাদের অফিসিয়াল চ্যানেলগুলোতে জয়েন করুন!**\n\n"
+            "নিচের সবগুলো চ্যানেলে জয়েন করে ** Verified / চেক করুন ** বোতামে চাপ দিন:"
+        )
+        bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=force_join_keyboard())
+        return
 
     welcome_text = (
         "╔════════════════════════════╗\n"
         "   👑  *ONLINE EARNING BAZAR*  👑\n"
         "╚════════════════════════════╝\n\n"
-        "✨ *স্বাগতম প্রফেশনাল অটোমেশন বোট প্যানেলে!*\n"
+        "✨ *স্বাগতম আন্তর্জাতিক মানের অটোমেশন বোট প্যানেলে!*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 *বর্তমান আইডি রেট:* `৳{account_rate:.2f}` / পিস\n"
-        "🎯 নিচের আকর্ষণীয় মেনু থেকে কাজ শুরু করুন:"
+        "📊 *বর্তমান ক্যাটাগরি রেটসমূহ:*\n"
+        f"• Facebook Cookies: `৳{RATES['fb_cookie']}` / পিস\n"
+        f"• Facebook 2FA: `৳{RATES['fb_2fa']}` / পিস\n"
+        f"• Instagram Cookies: `৳{RATES['ig_cookie']}` / পিস\n"
+        f"• Instagram 2FA: `৳{RATES['ig_2fa']}` / পিস\n\n"
+        "🎯 কাজের ধরন অনুযায়ী নিচের মেনু থেকে বেছে নিন:"
     )
     bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown", reply_markup=main_bottom_keyboard(message.chat.id))
 
@@ -201,17 +261,14 @@ def cancel_action(message):
     user_states.pop(message.chat.id, None)
     bot.send_message(message.chat.id, "🚫 বর্তমান কাজটি বাতিল করা হয়েছে।", reply_markup=main_bottom_keyboard(message.chat.id))
 
-# Bottom Button Handlers
+# Bottom Buttons Listeners
 
 @bot.message_handler(func=lambda msg: msg.text == "⚡ 𝙄𝘿 𝙎𝙪𝙗𝙢𝙞𝙨𝙨𝙞𝙤𝙣 ⚡")
 def category_submission(message):
-    text = (
-        "┌─────────────────────────┐\n"
-        "   📥  *ID SUBMISSION CENTER* \n"
-        "└─────────────────────────┘\n\n"
-        f"📌 *বর্তমান প্রতি একাউন্ট রেট:* `৳{account_rate:.2f}`\n"
-        "নিচের সুবিধাজনক মাধ্যমে কাজ জমা দিন:"
-    )
+    if not check_force_join(message.chat.id):
+        bot.send_message(message.chat.id, "🔒 আগে সবকটি চ্যানেলে জয়েন করুন!", reply_markup=force_join_keyboard())
+        return
+    text = "📥 *ID SUBMISSION CENTER*\n━━━━━━━━━━━━━━━━━━━━\nজমা দেওয়ার মাধ্যম নির্বাচন করুন:"
     bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=inline_submission_menu())
 
 @bot.message_handler(func=lambda msg: msg.text == "🛠️ 𝙒𝙤𝙧𝙠𝙚𝙧 𝙏𝙤𝙤𝙡𝙨")
@@ -233,14 +290,13 @@ def category_profile(message):
         f"👤 *নাম:* `{worker_name}`\n"
         f"📈 *আজকের জমা:* `{daily_c}` টি\n"
         f"💎 *বর্তমান ইনকাম ব্যালেন্স:* `৳{balance:.2f}`\n"
-        f"💎 *চলতি আইডি রেট:* `৳{account_rate:.2f}`"
     )
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("💳 টাকা তুলুন (Withdraw)", callback_data="prof_withdraw"))
     markup.add(InlineKeyboardButton("🔗 রেফারেল লিংক", callback_data="prof_ref"))
     bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
 
-@bot.message_handler(func=lambda msg: msg.text == "🏆 𝙇𝙚𝙖𝙙𝙚𝙧𝙗𝙤𝙖𝙧𝙙")
+@bot.message_handler(func=lambda msg: msg.text == "🏆 𝙇𝙚𝙖𝙙𝙚𝙧𝙤𝙖𝙧𝙙")
 def show_leaderboard(message):
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     workers = {}
@@ -249,7 +305,7 @@ def show_leaderboard(message):
             reader = csv.reader(file)
             for row in reader:
                 if len(row) >= 5 and today in row[0]:
-                    w_name = row[1]
+                    w_name = row[2]
                     workers[w_name] = workers.get(w_name, 0) + 1
 
     sorted_workers = sorted(workers.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -275,30 +331,41 @@ def category_admin(message):
 def handle_all_callbacks(call):
     chat_id = call.message.chat.id
     code = call.data
-    global account_rate, single_submit_active, bulk_submit_active, pass_rule
+    global single_submit_active, bulk_submit_active, pass_rule
 
-    # --- Submissions ---
+    if code == "verify_join":
+        if check_force_join(chat_id):
+            bot.answer_callback_query(call.id, "✅ ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
+            bot.delete_message(chat_id, call.message.message_id)
+            bot.send_message(chat_id, "🎉 স্বাগতম! এখন আপনি বটের সব সার্ভিস ব্যবহার করতে পারবেন।", reply_markup=main_bottom_keyboard(chat_id))
+        else:
+            bot.answer_callback_query(call.id, "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি!", show_alert=True)
+        return
+
+    # --- Submission Routing ---
     if code == "sub_single":
         if not single_submit_active:
             bot.answer_callback_query(call.id, "⚠️ এডমিন বর্তমানে সিঙ্গেল জমা বন্ধ রেখেছেন!", show_alert=True)
             return
-        user_states[chat_id] = {'step': 'AWAITING_UID'}
+        bot.send_message(chat_id, "📌 প্রথমে আপনার আইডির ক্যাটাগরি বেছে নিন:", reply_markup=category_selection_keyboard())
+
+    elif code.startswith("cat_"):
+        cat_type = code.replace("cat_", "")
+        user_states[chat_id] = {'step': 'AWAITING_UID', 'category': cat_type}
         bot.send_message(chat_id, "🆔 *১৫-২০ ডিজিটের UID লিখুন:*", parse_mode="Markdown", reply_markup=cancel_keyboard())
 
     elif code == "sub_bulk":
         if not bulk_submit_active:
             bot.answer_callback_query(call.id, "⚠️ এডমিন বর্তমানে বাল্ক/এক্সেল জমা বন্ধ রেখেছেন!", show_alert=True)
             return
-        user_states[chat_id] = {'step': 'AWAITING_BULK_DATA'}
-        text = "📦 *একসাথে বাল্ক ডাটা পেস্ট করুন:*\n\nফরম্যাট:\n`UID | Password | Cookies/2FA`\n(প্রতি লাইনে একটি করে)"
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=cancel_keyboard())
+        bot.send_message(chat_id, "📌 বাল্ক জমা দিতে ক্যাটাগরি সিলেক্ট করুন:", reply_markup=category_selection_keyboard())
 
     elif code == "sub_excel":
         if not bulk_submit_active:
             bot.answer_callback_query(call.id, "⚠️ এডমিন বর্তমানে বাল্ক/এক্সেল জমা বন্ধ রেখেছেন!", show_alert=True)
             return
         user_states[chat_id] = {'step': 'AWAITING_EXCEL_FILE'}
-        text = "📄 *Google Sheet/Excel ফাইল (.xlsx/csv) পাঠান:*\n\nনিশ্চিত করুন ফাইলের কলাম ফরম্যাট এমন:\n`UID` | `Password` | `Cookies/2FA`"
+        text = "📄 *Google Sheet/Excel ফাইল (.xlsx/csv) পাঠান:*\n\nকলাম ফরম্যাট এমন হতে হবে:\n`UID` | `Password` | `Cookies/2FA`"
         bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=cancel_keyboard())
 
     elif code == "sub_pass_settings":
@@ -311,10 +378,23 @@ def handle_all_callbacks(call):
         user_states[chat_id] = {'step': 'AWAITING_NEW_PASS'}
         bot.send_message(chat_id, "🔑 আপনার সেভ করতে চাওয়া পাসওয়ার্ড লিখুন:", reply_markup=cancel_keyboard())
 
-    # --- Admin Callbacks ---
-    elif code == "adm_set_rate" and chat_id == ADMIN_ID:
-        user_states[chat_id] = {'step': 'AWAITING_NEW_RATE'}
-        bot.send_message(chat_id, f"💰 বর্তমানে প্রতি আইডির দাম ৳{account_rate}\n\nনতুন দাম কত টাকা দিতে চান টাইপ করুন (যেমন: 6.0):", reply_markup=cancel_keyboard())
+    # --- Admin Config Callbacks ---
+    elif code == "adm_rates" and chat_id == ADMIN_ID:
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton(f"FB Cookie (৳{RATES['fb_cookie']})", callback_data="rate_fb_cookie"),
+            InlineKeyboardButton(f"FB 2FA (৳{RATES['fb_2fa']})", callback_data="rate_fb_2fa")
+        )
+        markup.add(
+            InlineKeyboardButton(f"IG Cookie (৳{RATES['ig_cookie']})", callback_data="rate_ig_cookie"),
+            InlineKeyboardButton(f"IG 2FA (৳{RATES['ig_2fa']})", callback_data="rate_ig_2fa")
+        )
+        bot.send_message(chat_id, "💰 কোন ক্যাটাগরির রেট পরিবর্তন করতে চান সিলেক্ট করুন:", reply_markup=markup)
+
+    elif code.startswith("rate_") and chat_id == ADMIN_ID:
+        selected_cat = code.replace("rate_", "")
+        user_states[chat_id] = {'step': 'AWAITING_CAT_RATE', 'cat': selected_cat}
+        bot.send_message(chat_id, f"💰 `{selected_cat}` এর নতুন দাম কত টাকা দিতে চান টাইপ করুন (যেমন: 6.5):", parse_mode="Markdown", reply_markup=cancel_keyboard())
 
     elif code == "adm_toggle_single" and chat_id == ADMIN_ID:
         single_submit_active = not single_submit_active
@@ -341,7 +421,7 @@ def handle_all_callbacks(call):
                 for row in reader:
                     if len(row) >= 5 and today in row[0]:
                         total += 1
-                        w_name = row[1]
+                        w_name = row[2]
                         workers[w_name] = workers.get(w_name, 0) + 1
         reply_msg = f"📊 *আজকের মোট জমা:* **{total}** টি\n\n" + "\n".join([f"• `{w}`: {c}টি" for w, c in workers.items()])
         bot.send_message(chat_id, reply_msg, parse_mode="Markdown")
@@ -376,7 +456,7 @@ def handle_all_callbacks(call):
 
     elif code == "tool_uid":
         user_states[chat_id] = {'step': 'AWAITING_FB_LINK'}
-        bot.send_message(chat_id, "🔍 ফেসবুক লিংক দিন:", parse_mode="Markdown", reply_markup=cancel_keyboard())
+        bot.send_message(chat_id, "🔍 ফেসবুক/ইনস্টাগ্রাম প্রফাইল লিংক দিন:", parse_mode="Markdown", reply_markup=cancel_keyboard())
 
     elif code == "tool_mail":
         try:
@@ -408,7 +488,6 @@ def handle_excel_document(message):
             with open(file_name, 'wb') as new_file:
                 new_file.write(downloaded_file)
 
-            # Read Excel or CSV
             if file_name.endswith('.csv'):
                 df = pd.read_csv(file_name)
             else:
@@ -417,6 +496,7 @@ def handle_excel_document(message):
             success_count = 0
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             worker_name = message.from_user.first_name
+            total_earned = 0.0
 
             for _, row in df.iterrows():
                 row_vals = [str(x).strip() for x in row.values]
@@ -424,25 +504,29 @@ def handle_excel_document(message):
                     uid, password, payload = row_vals[0], row_vals[1], row_vals[2]
                     clean_uid = extract_numeric_uid(uid)
                     if clean_uid and not is_duplicate_uid(clean_uid):
+                        track_id = generate_tracking_id()
+                        rate = RATES["fb_cookie"] if is_valid_cookies(payload) else RATES["fb_2fa"]
                         tab = "Cookies_Data" if is_valid_cookies(payload) else "2FA_Data"
-                        save_to_sheet(tab, [now_str, str(chat_id), clean_uid, password, payload])
+                        
+                        save_to_sheet(tab, [now_str, track_id, str(chat_id), clean_uid, password, payload])
                         with open("accounts_list.csv", "a", newline="", encoding="utf-8-sig") as file:
                             writer = csv.writer(file)
                             if not os.path.isfile("accounts_list.csv") or os.stat("accounts_list.csv").st_size == 0:
-                                writer.writerow(["Date & Time", "Worker Name", "UID", "Password", "2FA/Cookies"])
-                            writer.writerow([now_str, worker_name, clean_uid, password, payload])
+                                writer.writerow(["Date & Time", "Tracking ID", "Worker Name", "UID", "Password", "2FA/Cookies"])
+                            writer.writerow([now_str, track_id, worker_name, clean_uid, password, payload])
+                        
                         success_count += 1
+                        total_earned += rate
 
             if os.path.exists(file_name):
                 os.remove(file_name)
 
-            earned = success_count * account_rate
-            user_balances[chat_id] = user_balances.get(chat_id, 0.0) + earned
+            user_balances[chat_id] = user_balances.get(chat_id, 0.0) + total_earned
             user_states.pop(chat_id, None)
 
-            bot.reply_to(message, f"🎉 *এক্সেল ফাইল প্রসেস সফল!*\n\n✅ যোগ করা হয়েছে: **{success_count}** টি আইডি\n💰 অর্জিত টাকা: ৳{earned:.2f}", parse_mode="Markdown", reply_markup=main_bottom_keyboard(chat_id))
+            bot.reply_to(message, f"🎉 *এক্সেল ফাইল প্রসেস সফল!*\n\n✅ যোগ করা হয়েছে: **{success_count}** টি আইডি\n💰 অর্জিত টাকা: ৳{total_earned:.2f}", parse_mode="Markdown", reply_markup=main_bottom_keyboard(chat_id))
         
-        except Exception as e:
+        except Exception:
             bot.reply_to(message, "❌ ফাইল প্রসেস করতে ব্যর্থ হয়েছে! সঠিক ফরম্যাটে .xlsx বা .csv ফাইল আপলোড করুন।")
 
 # ================= GENERAL STATE MESSAGE HANDLER =================
@@ -452,7 +536,7 @@ def handle_all_text(message):
     chat_id = message.chat.id
     text = message.text.strip() if message.text else ""
     state = user_states.get(chat_id)
-    global account_rate, pass_rule
+    global pass_rule
 
     if not state:
         bot.send_message(chat_id, "নিচের মেনু থেকে অপশন বেছে নিন:", reply_markup=main_bottom_keyboard(chat_id))
@@ -461,13 +545,15 @@ def handle_all_text(message):
     step = state.get('step')
 
     # Admin State Actions
-    if step == 'AWAITING_NEW_RATE' and chat_id == ADMIN_ID:
+    if step == 'AWAITING_CAT_RATE' and chat_id == ADMIN_ID:
+        cat = state.get('cat')
         try:
-            account_rate = float(text)
+            new_r = float(text)
+            RATES[cat] = new_r
             user_states.pop(chat_id, None)
-            bot.send_message(chat_id, f"✅ নতুন রেট সেটিং সফল! বর্তমান রেট: ৳{account_rate:.2f}", reply_markup=main_bottom_keyboard(chat_id))
+            bot.send_message(chat_id, f"✅ `{cat}` এর নতুন রেট আপডেট হয়েছে: ৳{new_r:.2f}", parse_mode="Markdown", reply_markup=main_bottom_keyboard(chat_id))
         except ValueError:
-            bot.send_message(chat_id, "❌ সঠিক সংখ্যা লিখুন (যেমন: 6.0 বা 5.5):")
+            bot.send_message(chat_id, "❌ সঠিক সংখ্যা লিখুন (যেমন: 6.5):")
 
     elif step == 'AWAITING_NEW_PASS_RULE' and chat_id == ADMIN_ID:
         pass_rule = text
@@ -494,78 +580,48 @@ def handle_all_text(message):
             bot.send_message(chat_id, "❌ ভুল বা ডুপ্লিকেট UID! অন্য UID দিন:")
             return
 
+        cat = state.get('category', 'fb_cookie')
         state['uid'] = numeric_uid
-        state['step'] = 'AWAITING_TYPE'
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("🍪 Cookies", callback_data="sub_cookie_type"),
-            InlineKeyboardButton("🔐 2FA Key", callback_data="sub_2fa_type")
-        )
-        bot.send_message(chat_id, f"✅ UID গৃহীত: `{numeric_uid}`\n\nকী জমা দিবেন বেছে নিন:", parse_mode="Markdown", reply_markup=markup)
-
-    elif step == 'AWAITING_BULK_DATA':
-        lines = text.split("\n")
-        success_count = 0
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        worker_name = message.from_user.first_name
-
-        for line in lines:
-            parts = [p.strip() for p in line.split("|")]
-            if len(parts) == 3:
-                uid, password, payload = parts[0], parts[1], parts[2]
-                clean_uid = extract_numeric_uid(uid)
-                if clean_uid and not is_duplicate_uid(clean_uid):
-                    tab = "Cookies_Data" if is_valid_cookies(payload) else "2FA_Data"
-                    save_to_sheet(tab, [now_str, str(chat_id), clean_uid, password, payload])
-                    with open("accounts_list.csv", "a", newline="", encoding="utf-8-sig") as file:
-                        writer = csv.writer(file)
-                        if not os.path.isfile("accounts_list.csv") or os.stat("accounts_list.csv").st_size == 0:
-                            writer.writerow(["Date & Time", "Worker Name", "UID", "Password", "2FA/Cookies"])
-                        writer.writerow([now_str, worker_name, clean_uid, password, payload])
-                    success_count += 1
-
-        earned = success_count * account_rate
-        user_balances[chat_id] = user_balances.get(chat_id, 0.0) + earned
-        user_states.pop(chat_id, None)
-        bot.send_message(chat_id, f"🎉 *বাল্ক জমা সম্পন্ন!*\n\n✅ সফল: **{success_count}** টি আইডি\n💰 মোট জমা: ৳{earned:.2f}", parse_mode="Markdown", reply_markup=main_bottom_keyboard(chat_id))
+        state['step'] = 'AWAITING_SINGLE_DATA'
+        
+        req_type = "Cookies" if "cookie" in cat else "2FA Key"
+        bot.send_message(chat_id, f"✅ UID গৃহীত: `{numeric_uid}`\n\nএখন আপনার **{req_type}** পেস্ট করুন:", parse_mode="Markdown")
 
     elif step == 'AWAITING_SINGLE_DATA':
-        data_type = state.get('type')
+        cat = state.get('category', 'fb_cookie')
         uid = state.get('uid')
         password = user_passwords.get(chat_id, f"Pass_{pass_rule}")
         worker_name = message.from_user.first_name
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        if data_type == 'COOKIE' and not is_valid_cookies(text):
-            bot.send_message(chat_id, "❌ অকার্যকর কুকিজ!")
+        if "cookie" in cat and not is_valid_cookies(text):
+            bot.send_message(chat_id, "❌ অকার্যকর কুকিজ! সঠিক কুকিজ পেস্ট করুন:")
             return
-        elif data_type == '2FA' and not is_valid_2fa_key(text):
-            bot.send_message(chat_id, "❌ ভুল 2FA Key!")
+        elif "2fa" in cat and not is_valid_2fa_key(text):
+            bot.send_message(chat_id, "❌ ভুল 2FA Key! সঠিক Key পেস্ট করুন:")
             return
 
-        tab = "Cookies_Data" if data_type == 'COOKIE' else "2FA_Data"
-        save_to_sheet(tab, [now_str, str(chat_id), uid, password, text])
+        rate = RATES.get(cat, 5.0)
+        track_id = generate_tracking_id()
+        tab = "Cookies_Data" if "cookie" in cat else "2FA_Data"
+        
+        save_to_sheet(tab, [now_str, track_id, str(chat_id), uid, password, text])
         with open("accounts_list.csv", "a", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
             if not os.path.isfile("accounts_list.csv") or os.stat("accounts_list.csv").st_size == 0:
-                writer.writerow(["Date & Time", "Worker Name", "UID", "Password", "2FA/Cookies"])
-            writer.writerow([now_str, worker_name, uid, password, text])
+                writer.writerow(["Date & Time", "Tracking ID", "Worker Name", "UID", "Password", "2FA/Cookies"])
+            writer.writerow([now_str, track_id, worker_name, uid, password, text])
 
-        user_balances[chat_id] = user_balances.get(chat_id, 0.0) + account_rate
-        bot.send_message(chat_id, f"🎉 *জমা সফল হয়েছে!*\n📌 **UID:** `{uid}`\n💰 যোগ হয়েছে: ৳{account_rate:.2f}", parse_mode="Markdown", reply_markup=main_bottom_keyboard(chat_id))
+        user_balances[chat_id] = user_balances.get(chat_id, 0.0) + rate
+        bot.send_message(
+            chat_id, 
+            f"🎉 *জমা সফল হয়েছে!*\n\n📌 **Tracking ID:** `{track_id}`\n📌 **UID:** `{uid}`\n💰 যোগ হয়েছে: ৳{rate:.2f}", 
+            parse_mode="Markdown", 
+            reply_markup=main_bottom_keyboard(chat_id)
+        )
         user_states.pop(chat_id, None)
-
-@bot.callback_query_handler(func=lambda call: call.data in ["sub_cookie_type", "sub_2fa_type"])
-def handle_single_type_selection(call):
-    chat_id = call.message.chat.id
-    state = user_states.get(chat_id)
-    if state and state.get('step') == 'AWAITING_TYPE':
-        state['type'] = 'COOKIE' if call.data == "sub_cookie_type" else '2FA'
-        state['step'] = 'AWAITING_SINGLE_DATA'
-        text = "🍪 আপনার **Cookies** পেস্ট করুন:" if call.data == "sub_cookie_type" else "🔐 আপনার **2FA Key** দিন:"
-        bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, parse_mode="Markdown")
 
 # ================= RUNNER =================
 if __name__ == "__main__":
-    print("Bot Running with Admin Controls & Excel Support...")
+    print("Bot Running with Category Rates & Mandatory Channel System...")
     bot.infinity_polling(skip_pending=True)
