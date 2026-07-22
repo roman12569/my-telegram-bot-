@@ -21,16 +21,15 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     return "Enterprise Earning Bazar Bot is Running flawlessly!"
+
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-threading.Thread(target=run_flask).start()
 
 # ================= 2. Configuration =================
 TOKEN = '8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4'  
 ADMIN_ID = 6257034751         
 
-# আপনার গুগল শিট আইডি এখানে বসানো হয়েছে
 SPREADSHEET_ID = "1aWntk0eMZt6w7GWmXs_PmckvoDT1uCCRiGUELiV4NKA"
 CREDENTIALS_FILE = "credentials.json"
 MONGO_URL = "mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0"
@@ -93,7 +92,7 @@ def generate_tracking_id(): return f"#SUB-{random.randint(10000, 99999)}"
 def async_save_to_sheet(tab_name, row_data):
     def task():
         try:
-            if not os.path.exists(CREDENTIALS_FILE): return # credentials.json না থাকলে সেভ স্কিপ করবে
+            if not os.path.exists(CREDENTIALS_FILE): return 
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
             creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
             g_client = gspread.authorize(creds)
@@ -126,8 +125,8 @@ def submission_bottom_keyboard(chat_id, lang):
         markup.add(KeyboardButton("🔙 Main Menu"))
     else:
         markup.add(KeyboardButton("📥 সিঙ্গেল জমা"), KeyboardButton("📦 বাল্ক জমা"))
-        markup.add(KeyboardButton("📊 এক্সেল জমা"), KeyboardButton("⚙️ পাসওয়ার্ড নিয়ম"))
-        markup.add(KeyboardButton("🔙 মেইন মেনু"))
+        markup.add(KeyboardButton("📊 এক্সেল জমা"))
+        markup.add(KeyboardButton("⚙️ পাসওয়ার্ড নিয়ম"), KeyboardButton("🔙 মেইন মেনু"))
     return markup
 
 def admin_bottom_keyboard():
@@ -203,7 +202,6 @@ def document_photo_router(message):
     state = user_states.get(chat_id, {})
     step = state.get('step')
     
-    # Broadcast Logic
     if step == 'AWAITING_BROADCAST_MSG' and chat_id == ADMIN_ID:
         user_states.pop(chat_id, None)
         bot.send_message(chat_id, "⏳ Broadcasting... Please wait.")
@@ -216,7 +214,6 @@ def document_photo_router(message):
             except Exception: pass
         return bot.send_message(chat_id, f"✅ Sent to {count} users.", reply_markup=admin_bottom_keyboard())
         
-    # Excel File Logic
     if step == 'AWAITING_EXCEL_FILE' and message.document:
         if not bulk_submit_active: return bot.send_message(chat_id, "⚠️ Excel mode disabled.")
         try:
@@ -260,7 +257,6 @@ def master_text_router(message):
     global single_submit_active, bulk_submit_active, pass_rule, MAINTENANCE_MODE
     chat_id = message.chat.id
     
-    # Anti-Spam (1.5 sec limit)
     now = time.time()
     if chat_id != ADMIN_ID:
         if now - user_last_msg_time.get(chat_id, 0) < 1.5: return 
@@ -276,7 +272,6 @@ def master_text_router(message):
     state = user_states.get(chat_id, {})
     step = state.get('step')
 
-    # Navigation & Basic Menus
     if text in ["🔙 Main Menu", "🔙 মেইন মেনু", "❌ Cancel", "❌ বাতিল করুন"]:
         user_states.pop(chat_id, None)
         return bot.send_message(chat_id, "👑 Main Menu:", reply_markup=main_bottom_keyboard(chat_id, lang))
@@ -308,7 +303,6 @@ def master_text_router(message):
         markup.add(InlineKeyboardButton("💳 Withdraw", callback_data="prof_withdraw"))
         return bot.send_message(chat_id, msg_str, reply_markup=markup)
 
-    # 👑 ADMIN COMMANDS
     if "Admin Panel" in text and chat_id == ADMIN_ID:
         user_states.pop(chat_id, None)
         return bot.send_message(chat_id, "👑 **ADMIN PANEL**", reply_markup=admin_bottom_keyboard())
@@ -331,8 +325,6 @@ def master_text_router(message):
         if msg == "💳 **PENDING WITHDRAWALS:**\n\n": msg += "No pending requests."
         return bot.send_message(chat_id, msg)
 
-    # ================= State Processors (Multi-step) =================
-    
     if step == 'AWAITING_BROADCAST_MSG' and chat_id == ADMIN_ID:
         count = 0
         for u in users_collection.find({}):
@@ -359,7 +351,6 @@ def master_text_router(message):
         user_states.pop(chat_id, None)
         return
 
-    # Submissions Initialization
     if "Single Submit" in text or "সিঙ্গেল জমা" in text:
         user_states[chat_id] = {'step': 'AWAITING_SINGLE_UID'}
         return bot.send_message(chat_id, "🆔 Send **UID**:", reply_markup=cancel_keyboard(lang))
@@ -372,7 +363,6 @@ def master_text_router(message):
         user_states[chat_id] = {'step': 'AWAITING_EXCEL_FILE'}
         return bot.send_message(chat_id, "📄 Send .xlsx/.csv file:", reply_markup=cancel_keyboard(lang))
 
-    # Helper Tools
     if "2FA Gen" in text or "2FA" in text:
         user_states[chat_id] = {'step': 'AWAITING_2FA_GEN'}
         return bot.send_message(chat_id, "📌 Send 2FA Secret Key:", reply_markup=cancel_keyboard(lang))
@@ -381,7 +371,6 @@ def master_text_router(message):
         user_states[chat_id] = {'step': 'AWAITING_FB_LINK'}
         return bot.send_message(chat_id, "🔍 Send profile link:", reply_markup=cancel_keyboard(lang))
 
-    # Processing Submissions & Tools
     if step == 'AWAITING_SINGLE_UID':
         uid = extract_numeric_uid(text)
         if not uid or is_duplicate_uid(uid): return bot.send_message(chat_id, "❌ Invalid/Duplicate UID!")
@@ -443,6 +432,10 @@ def master_text_router(message):
     if not step and chat_id != ADMIN_ID:
         bot.send_message(chat_id, "Select an option:", reply_markup=main_bottom_keyboard(chat_id, lang))
 
+# ================= 9. Background Execution (Flask + Bot) =================
 if __name__ == "__main__":
-    print("🚀 FLAWLESS ENTERPRISE BOT STARTED...")
+    print("🚀 STARTING FLASK WEB SERVER...")
+    threading.Thread(target=run_flask).start()
+    
+    print("🤖 STARTING TELEGRAM BOT POLLING...")
     bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=30)
