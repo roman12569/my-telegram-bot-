@@ -21,16 +21,16 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     return "Enterprise Earning Bazar Bot is Running flawlessly!"
-
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+threading.Thread(target=run_flask).start()
 
 # ================= 2. Configuration =================
 TOKEN = '8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4'  
 ADMIN_ID = 6257034751         
 
-SPREADSHEET_ID = "1aWntk0eMZt6w7GWmXs_PmckvoDT1uCCRiGUELiV4NKA"
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1aWntk0eMZt6w7GWmXs_PmckvoDT1uCCRiGUELiV4NKA")
 CREDENTIALS_FILE = "credentials.json"
 MONGO_URL = "mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0"
 
@@ -125,8 +125,8 @@ def submission_bottom_keyboard(chat_id, lang):
         markup.add(KeyboardButton("🔙 Main Menu"))
     else:
         markup.add(KeyboardButton("📥 সিঙ্গেল জমা"), KeyboardButton("📦 বাল্ক জমা"))
-        markup.add(KeyboardButton("📊 এক্সেল জমা"))
-        markup.add(KeyboardButton("⚙️ পাসওয়ার্ড নিয়ম"), KeyboardButton("🔙 মেইন মেনু"))
+        markup.add(KeyboardButton("📊 এক্সেল জমা"), KeyboardButton("⚙️ পাসওয়ার্ড নিয়ম"))
+        markup.add(KeyboardButton("🔙 মেইন মেনু"))
     return markup
 
 def admin_bottom_keyboard():
@@ -432,10 +432,5 @@ def master_text_router(message):
     if not step and chat_id != ADMIN_ID:
         bot.send_message(chat_id, "Select an option:", reply_markup=main_bottom_keyboard(chat_id, lang))
 
-# ================= 9. Background Execution (Flask + Bot) =================
 if __name__ == "__main__":
-    print("🚀 STARTING FLASK WEB SERVER...")
-    threading.Thread(target=run_flask).start()
-    
-    print("🤖 STARTING TELEGRAM BOT POLLING...")
     bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=30)
