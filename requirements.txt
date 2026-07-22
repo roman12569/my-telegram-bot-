@@ -1,7 +1,9 @@
 pyTelegramBotAPI
-pyotp
+flask
+pymongo
+dnspython
 gspread
 oauth2client
 pandas
-openpyxl
+pyotp
 requests
