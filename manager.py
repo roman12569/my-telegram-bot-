@@ -11,7 +11,7 @@ import struct
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from pymongo import MongoClient
-from flask import Flask
+from flask import Flask, request, abort
 
 # ================= 1. CONFIGURATION & SETUP (OPTIMIZED POOL) =================
 TOKEN = "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4"      
@@ -128,7 +128,6 @@ def handle_start(message):
     
     lang = get_user_lang(user_id)
     
-    # স্টার্ট করার সাথেই চ্যানেল মেম্বারশিপ চেক করা হবে
     if not check_user_membership(user_id):
         text = (
             "🔒 <b>CHANNEL VERIFICATION / চ্যানেল ভেরিফিকেশন</b>\n"
@@ -671,30 +670,40 @@ def process_ig_live_check(message):
     bot.send_message(user_id, report)
     show_main_dashboard(user_id, get_user_lang(user_id))
 
-# ================= FLASK SERVER FOR RENDER PORT REQUIREMENT =================
+
+# ================= 13. FLASK WEBHOOK SERVER (PERMANENT 409 CONFLICT FIX) =================
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Online Earning Bazar Bot is Live and Running!"
+    return "Online Earning Bazar Bot Webhook Server is Live!"
 
-def run_flask():
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    else:
+        abort(403)
+
+if __name__ == "__main__":
+    print("[BOT STARTED]: Initializing Webhook Server for Render...")
+    
+    # পুরনো সমস্ত পোলিং বা ওয়েবহুক সেশন ক্লিয়ার করা
+    bot.remove_webhook()
+    time.sleep(1)
+    
+    # রেন্ডারের নিজস্ব এক্সটার্নাল URL দিয়ে ওয়েবভুক সেটআপ করা
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if render_url:
+        webhook_url = f"{render_url}/{TOKEN}"
+        bot.set_webhook(url=webhook_url)
+        print(f"[WEBHOOK CONFIGURED]: {webhook_url}")
+    else:
+        print("[WARNING]: RENDER_EXTERNAL_URL not found! Make sure Webhook URL is manually accessible.")
+
+    # ফ্লাস্ক সার্ভার পোর্ট বাইন্ড করে রান করা (এটি রেন্ডমের পোর্ট রিকোয়ারমেন্ট ১০০% পূরণ করবে এবং 409 Conflict চিরতরে দূর করবে)
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-# ================= 13. SERVER RUNNER =================
-if __name__ == "__main__":
-    print("[BOT STARTED]: Fully Bulletproof & Error-Free Online Earning Bazar Bot is running...")
-    
-    # 1. ফ্লাস্ক সার্ভার ব্যাকগ্রাউন্ড থ্রেডে চালু করা (রেন্ডম পোর্ট রিকোয়ারমেন্ট মেটানোর জন্য)
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    # 2. কনফ্লিক্ট বা পুরোনো সেশন দূর করা
-    try:
-        bot.remove_webhook()
-    except Exception as e:
-        print(f"Webhook remove warning: {e}")
-        
-    # 3. বট পোলিং শুরু করা
-    bot.infinity_polling()
