@@ -89,16 +89,11 @@ def extract_uid_from_url(url_text):
     match = re.search(r'(?:id=|\/(\d{10,}))', url_text)
     if match:
         return match.group(1) or match.group(2)
-    digits = re.findall(r'\d{10,}', url_text)
+    digits = re.findall(r'\b\d{10,}\b', url_text)
     return digits[0] if digits else None
 
 # ================= 3. PERMANENT REPLY KEYBOARDS (NO INLINE) =================
-def get_lang_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("🇧🇩 বাংলা (Bangla)"), KeyboardButton("🇬🇧 English"))
-    return markup
-
-def get_force_join_keyboard(lang):
+def get_force_join_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     markup.add(KeyboardButton("📢 Joined All Channels / সব চ্যানেলে জয়েন করেছি"))
     return markup
@@ -113,7 +108,7 @@ def get_main_menu_keyboard(lang):
         markup.add(KeyboardButton("🛠️ প্রোডাক্টিভিটি টুলস"), KeyboardButton("👑 মাস্টার এডমিন প্যানেল"))
     return markup
 
-# ================= 4. /START & ONBOARDING =================
+# ================= 4. /START & IMMEDIATE FORCE JOIN =================
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     user_id = message.from_user.id
@@ -131,31 +126,20 @@ def handle_start(message):
             "joined_date": datetime.datetime.now()
         })
     
-    text = (
-        "🌐 <b>SELECT YOUR LANGUAGE / ভাষা নির্বাচন করুন:</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "অনুগ্রহ করে আপনার পছন্দের ভাষা বেছে নিন:\n"
-        "Please select your preferred language:"
-    )
-    bot.send_message(user_id, text, reply_markup=get_lang_keyboard())
-
-@bot.message_handler(func=lambda msg: msg.text in ["🇧🇩 বাংলা (Bangla)", "🇬🇧 English"])
-def handle_language_selection(message):
-    user_id = message.from_user.id
-    lang = "en" if "English" in message.text else "bn"
-    users_col.update_one({"_id": user_id}, {"$set": {"lang": lang}})
+    lang = get_user_lang(user_id)
     
+    # স্টার্ট করার সাথেই চ্যানেল মেম্বারশিপ চেক করা হবে
     if not check_user_membership(user_id):
         text = (
             "🔒 <b>CHANNEL VERIFICATION / চ্যানেল ভেরিফিকেশন</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "বটে কাজ শুরু করতে আমাদের অফিশিয়াল চ্যানেলগুলোতে জয়েন করুন:\n\n"
+            "বটে কাজ শুরু করতে আমাদের অফিশিয়াল চ্যানেলগুলোতে অবশ্যই জয়েন করতে হবে:\n\n"
             "📢 @earningbazar0\n"
             "📢 @onlineearningmethod5\n"
             "📢 @onlineearningshop01\n\n"
             "চ্যানেলগুলোতে জয়েন করার পর নিচের বাটনে চাপ দিন:"
         )
-        bot.send_message(user_id, text, reply_markup=get_force_join_keyboard(lang))
+        bot.send_message(user_id, text, reply_markup=get_force_join_keyboard())
     else:
         show_main_dashboard(user_id, lang)
 
@@ -269,7 +253,7 @@ def handle_support(message):
     user_id = message.from_user.id
     bot.send_message(user_id, "📞 আপনার যেকোনো সমস্যায় অফিশিয়াল সাপোর্টে মেসেজ পাঠান: @earningbazar0")
 
-# ================= 7. AI SMART PARSER & BULK SUBMISSION =================
+# ================= 7. BULLETPROOF AI SMART PARSER & SUBMISSION =================
 @bot.message_handler(func=lambda msg: "বাল্ক" in msg.text or "Bulk Account" in msg.text or "সিঙ্গেল" in msg.text or "Single Account" in msg.text)
 def prompt_bulk_submission(message):
     user_id = message.from_user.id
@@ -300,19 +284,32 @@ def process_unlimited_bulk_data(message):
         if not line.strip():
             continue
         line_str = line.strip()
-        parts = re.split(r'\s+|,|\|', line_str)
-        uid = next((p for p in parts if p.isdigit() and len(p) >= 10), "UNKNOWN_UID")
         
+        uid = "UNKNOWN_UID"
+        c_user_match = re.search(r'c_user=(\d{10,})', line_str)
+        if c_user_match:
+            uid = c_user_match.group(1)
+        else:
+            digits = re.findall(r'\b\d{10,}\b', line_str)
+            if digits:
+                uid = digits[0]
+            else:
+                parts = re.split(r'\s+|,|\||:', line_str)
+                for p in parts:
+                    if p.isdigit() and len(p) >= 10:
+                        uid = p
+                        break
+
         if "c_user" in line_str or "xs=" in line_str:
             category = "FB Cookies"
             rate = 5.0
         elif "sessionid" in line_str:
             category = "IG Cookies"
             rate = 8.0
-        elif "ig_did" in line_str or ("instagram" in line_str.lower() and len(line_str.split()[-1]) == 6):
+        elif "ig_did" in line_str or "instagram" in line_str.lower():
             category = "IG 2FA"
             rate = 10.0
-        elif len(line_str.split()[-1]) == 6 and line_str.split()[-1].isdigit():
+        elif len(line_str.split()) >= 2 and len(line_str.split()[-1]) == 6 and line_str.split()[-1].isdigit():
             category = "FB 2FA"
             rate = 6.0
         else:
@@ -674,7 +671,6 @@ def process_ig_live_check(message):
     bot.send_message(user_id, report)
     show_main_dashboard(user_id, get_user_lang(user_id))
 
-
 # ================= FLASK SERVER FOR RENDER PORT REQUIREMENT =================
 app = Flask(__name__)
 
@@ -686,16 +682,15 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-
 # ================= 13. SERVER RUNNER =================
 if __name__ == "__main__":
-    print("[BOT STARTED]: Fully Optimized & Conflict-Free Online Earning Bazar Bot is running...")
+    print("[BOT STARTED]: Fully Bulletproof & Error-Free Online Earning Bazar Bot is running...")
     
-    # 1. ফ্লাস্ক সার্ভার ব্যাকগ্রাউন্ড থ্রেডে চালু করা (যাতে রেন্ডমের পোর্ট রিকোয়ারমেন্ট পূরণ হয়)
+    # 1. ফ্লাস্ক সার্ভার ব্যাকগ্রাউন্ড থ্রেডে চালু করা (রেন্ডম পোর্ট রিকোয়ারমেন্ট মেটানোর জন্য)
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    # 2. টেলিগ্রামের পুরোনো সেশন ও কনফ্লিক্ট দূর করা
+    # 2. কনফ্লিক্ট বা পুরোনো সেশন দূর করা
     try:
         bot.remove_webhook()
     except Exception as e:
