@@ -11,6 +11,7 @@ import struct
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from pymongo import MongoClient
+from flask import Flask
 
 # ================= 1. CONFIGURATION & SETUP (OPTIMIZED POOL) =================
 TOKEN = "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4"      
@@ -84,7 +85,7 @@ def generate_totp_code(secret_key):
         return None
 
 def extract_uid_from_url(url_text):
-    """লিংক থেকে রিয়েল UID এক্সট্র্যাক্টর"""
+    """লিংক থেকে রিয়েল UID এক্সট্র্যাক্টর"""
     match = re.search(r'(?:id=|\/(\d{10,}))', url_text)
     if match:
         return match.group(1) or match.group(2)
@@ -673,7 +674,32 @@ def process_ig_live_check(message):
     bot.send_message(user_id, report)
     show_main_dashboard(user_id, get_user_lang(user_id))
 
+
+# ================= FLASK SERVER FOR RENDER PORT REQUIREMENT =================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Online Earning Bazar Bot is Live and Running!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
 # ================= 13. SERVER RUNNER =================
 if __name__ == "__main__":
-    print("[BOT STARTED]: Fully Functional Online Earning Bazar Bot is running smoothly...")
+    print("[BOT STARTED]: Fully Optimized & Conflict-Free Online Earning Bazar Bot is running...")
+    
+    # 1. ফ্লাস্ক সার্ভার ব্যাকগ্রাউন্ড থ্রেডে চালু করা (যাতে রেন্ডমের পোর্ট রিকোয়ারমেন্ট পূরণ হয়)
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    # 2. টেলিগ্রামের পুরোনো সেশন ও কনফ্লিক্ট দূর করা
+    try:
+        bot.remove_webhook()
+    except Exception as e:
+        print(f"Webhook remove warning: {e}")
+        
+    # 3. বট পোলিং শুরু করা
     bot.infinity_polling()
