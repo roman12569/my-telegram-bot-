@@ -33,7 +33,7 @@ SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1aWntk0eMZt6w7GWmXs_PmckvoDT1
 CREDENTIALS_FILE = "credentials.json"
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
 
-# 🔒 মূল প্রাইভেট চ্যানেল (সব লাইভ ডাটা ও এনক্রিপ্টেড ব্যাকআপ এখানেই যাবে)
+# 🔒 আপনার মূল প্রাইভেট ব্যাকআপ চ্যানেল (সব সাবমিশন ও ব্যাকআপ ডাটা এখানে জমা হবে)
 LOG_CHANNEL_ID = -1003943094107
 BACKUP_CHANNEL_ID = "-1003943094107"
 
@@ -42,7 +42,7 @@ BACKUP_SECRET_KEY = os.environ.get("BACKUP_SECRET_KEY", "12345678901234567890123
 
 bot = telebot.TeleBot(TOKEN, parse_mode="Markdown")
 
-# MongoDB Database Connection Pool
+# MongoDB Database Connection
 mongo_client = MongoClient(
     MONGO_URL,
     maxPoolSize=200,
@@ -125,22 +125,6 @@ def generate_payout_receipt_py(receipt_id, worker_id, amount, method, trx_id):
     draw_text_safe(draw, (20, 180), f"TrxID: {trx_id}", fill='#334155')
     draw_text_safe(draw, (20, 210), f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", fill='#334155')
     draw_text_safe(draw, (280, 250), f"PAID: {amount} BDT", fill='#16a34a')
-    
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    return buf
-
-def generate_weekly_report_card_py(worker_id, total_tasks, total_earned, rank):
-    img = Image.new('RGB', (650, 350), color='#0f172a')
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([15, 15, 635, 335], outline='#38bdf8', width=4)
-    draw_text_safe(draw, (40, 45), "WEEKLY PERFORMANCE REPORT", fill='#38bdf8')
-    draw_text_safe(draw, (40, 85), f"Worker ID: #{worker_id}", fill='#94a3b8')
-    draw.rectangle([40, 110, 610, 270], fill='#1e293b')
-    draw_text_safe(draw, (70, 140), f"Total Approved Tasks: {total_tasks}", fill='#ffffff')
-    draw_text_safe(draw, (70, 180), f"Total Earnings: BDT {total_earned:.2f}", fill='#ffffff')
-    draw_text_safe(draw, (70, 220), f"Leaderboard Rank: #{rank}", fill='#10b981')
     
     buf = io.BytesIO()
     img.save(buf, format='PNG')
@@ -248,10 +232,6 @@ def extract_numeric_uid(text):
     match = re.search(r'(?:id=|\/|profile\.php\?id=|\/u\/)(\d{8,20})', text)
     return match.group(1) if match else None
 
-def is_valid_2fa_key(key_str):
-    cleaned = str(key_str).replace(" ", "").upper()
-    return bool(re.match(r'^[A-Z2-7]{16,32}$', cleaned))
-
 def is_valid_cookies(cookie_str):
     c_str = str(cookie_str)
     return ("c_user=" in c_str) or ("datr=" in c_str) or ("xs=" in c_str) or ("sessionid=" in c_str)
@@ -274,17 +254,8 @@ def check_live_account(uid):
 
 def evaluate_fraud_risk(chat_id, device_hash=None, is_bad=False):
     suspicion_score = 0
-    flag_reasons = []
-
-    if device_hash:
-        same_device_count = fingerprints_col.count_documents({"device_hash": device_hash, "worker_id": {"$ne": str(chat_id)}})
-        if same_device_count > 0:
-            suspicion_score += 50
-            flag_reasons.append(f"Multiple accounts ({same_device_count + 1}) on same device")
-
     if is_bad:
         suspicion_score += 25
-        flag_reasons.append("Bad submission or payload error")
 
     user = get_user_data(chat_id)
     total_score = user.get("risk_score", 0) + suspicion_score
@@ -301,7 +272,7 @@ def calculate_worker_tier(total_submissions):
         return "Gold VIP 🏆", 2.0
     elif total_submissions >= 150:
         return "Silver Worker 🥈", 1.0
-    return "Bronze Worker 🥉", 0.0
+    return "Bronze Worker 🏅", 0.0
 
 def get_current_task_rate(cat_key):
     rates = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
@@ -400,7 +371,6 @@ threading.Thread(target=background_daily_report_scheduler, daemon=True).start()
 def escrow_and_retention_daemon():
     while True:
         try:
-            # 1. Escrow Auto-Release (24 Hours)
             cutoff_24h = datetime.datetime.now() - timedelta(hours=24)
             pending_subs = submissions_col.find({"status": "Hold", "date_obj": {"$lte": cutoff_24h}})
             for sub in pending_subs:
@@ -414,7 +384,6 @@ def escrow_and_retention_daemon():
                 except Exception:
                     pass
 
-            # 2. Inactive Worker Retention Reminder (48 Hours)
             cutoff_48h = datetime.datetime.now() - timedelta(days=2)
             inactive_users = users_col.find({"banned": False, "last_active": {"$lt": cutoff_48h}})
             for u in inactive_users:
@@ -469,145 +438,80 @@ def telegram_webhook():
     else:
         abort(403)
 
-@flask_app.route('/api/submit', methods=['POST'])
-def api_submit():
-    data = request.json or {}
-    worker_id = data.get('workerId')
-    payload = data.get('payload')
-    if not worker_id or not payload:
-        return jsonify({"success": False, "message": "Missing workerId or payload"}), 400
-    return jsonify({"success": True, "message": "Submission received successfully."}), 200
-
-@flask_app.route('/api/admin/profit-dashboard', methods=['GET'])
-def profit_dashboard():
-    cutoff = datetime.datetime.now() - timedelta(days=1)
-    pipeline = [
-        {"$match": {"date_obj": {"$gte": cutoff}}},
-        {"$group": {"_id": None, "total_rate": {"$sum": "$rate"}, "count": {"$sum": 1}}}
-    ]
-    res = list(submissions_col.aggregate(pipeline))
-    rev = res[0]['total_rate'] if res else 0.0
-    cnt = res[0]['count'] if res else 0
-    profit = rev * 0.15
-    return jsonify({
-        "success": True,
-        "timeframe": "24 Hours",
-        "totalRevenue": rev,
-        "estimatedProfit": profit,
-        "totalSubmissions": cnt
-    })
-
-@flask_app.route('/api/admin/audit-logs', methods=['GET'])
-def get_audit_logs():
-    logs = list(audit_logs_col.find().sort("timestamp", -1).limit(50))
-    for l in logs:
-        l['_id'] = str(l['_id'])
-        if isinstance(l.get('timestamp'), datetime.datetime):
-            l['timestamp'] = l['timestamp'].isoformat()
-    return jsonify({"success": True, "logs": logs})
-
-@flask_app.route('/api/admin/rollback-task', methods=['POST'])
-def rollback_task():
-    data = request.json or {}
-    sub_id = data.get('submissionId')
-    admin_id = data.get('adminId', 'ADMIN')
-    if not sub_id:
-        return jsonify({"success": False, "error": "Missing submissionId"}), 400
-    
-    sub = submissions_col.find_one({"track_id": sub_id})
-    if not sub:
-        return jsonify({"success": False, "error": "Submission not found"}), 404
-    
-    users_col.update_one({"_id": sub['chat_id']}, {"$inc": {"balance": -sub['rate']}})
-    submissions_col.update_one({"track_id": sub_id}, {"$set": {"status": "ROLLED_BACK"}})
-    log_audit_event("TASK_ROLLBACK", admin_id, f"Rolled back submission {sub_id}")
-    return jsonify({"success": True, "message": f"Task {sub_id} rolled back successfully."})
-
-@flask_app.route('/api/admin/create-backup', methods=['GET'])
-def create_backup():
-    data = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "users": list(users_col.find({}, {"_id": 1, "balance": 1, "banned": 1})),
-        "submissions": list(submissions_col.find({}, {"_id": 0, "track_id": 1, "uid": 1, "rate": 1}))
-    }
-    enc_payload = aes_encrypt(data, BACKUP_SECRET_KEY)
-    return jsonify({"success": True, "encryptedSnapshot": enc_payload})
-
-@flask_app.route('/api/admin/voice-summary', methods=['GET'])
-def voice_summary():
-    total_users = users_col.count_documents({})
-    total_subs = submissions_col.count_documents({})
-    text = f"অ্যাডমিন মহোদয়! সিস্টেমে মোট ইউজার রয়েছে {total_users} জন এবং মোট কাজ জমা পড়েছে {total_subs} টি। সকল সার্ভিস সচল আছে।"
-    tts = gTTS(text, lang='bn')
-    buf = io.BytesIO()
-    tts.write_to_fp(buf)
-    buf.seek(0)
-    return send_file(buf, mimetype="audio/mp3", as_attachment=True, download_name="voice_summary.mp3")
-
-@flask_app.route('/api/worker/referral-banner/<int:worker_id>', methods=['GET'])
-def get_referral_banner(worker_id):
-    buf = generate_worker_badge_image_py(worker_id, f"Worker_{worker_id}", 100)
-    return send_file(buf, mimetype='image/png')
-
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
 
-# ================= 7. UI Keyboards =================
+# ================= 7. NEW UI KEYBOARDS (নতুন ইন্টারফেস ডিজাইন) =================
 
 def main_bottom_keyboard(chat_id):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("📋 টাস্ক ও কাজ"), KeyboardButton("👤 আমার অ্যাকাউন্ট"))
-    markup.add(KeyboardButton("🛠️ হেল্পার টুলস"), KeyboardButton("🏆 লিডারবোর্ড"))
-    markup.add(KeyboardButton("🎁 বোনাস ও টাস্ক"), KeyboardButton("📞 সাপোর্ট ও রুলস"))
+    markup.add(KeyboardButton("💼 টাস্ক ও টুলস"), KeyboardButton("👤 আমার অ্যাকাউন্ট"))
+    markup.add(KeyboardButton("🎁 বোনাস ও সাপোর্ট"))
     if chat_id == ADMIN_ID:
         markup.add(KeyboardButton("👑 এডমিন প্যানেল"))
     return markup
 
-def task_sub_keyboard(chat_id):
+def tasks_and_tools_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("📥 সিঙ্গেল জমা"), KeyboardButton("📦 বাল্ক জমা (Text)"))
-    markup.add(KeyboardButton("📊 এক্সেল ফাইল জমা"), KeyboardButton("⚙️ পাসওয়ার্ড নিয়ম"))
-    markup.add(KeyboardButton("🔙 মেইন মেনু"))
+    markup.add(KeyboardButton("📋 কাজ জমা দিন"), KeyboardButton("🛠 হেল্পার টুলস"))
+    markup.add(KeyboardButton("🔙 প্রধান মেনু"))
+    return markup
+
+def submit_tasks_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(KeyboardButton("📌 সিঙ্গেল জমা"), KeyboardButton("📦 বাল্ক জমা (Text)"))
+    markup.add(KeyboardButton("📊 এক্সেল ফাইল জমা"), KeyboardButton("⚙️ পাসওয়ার্ড নিয়ম"))
+    markup.add(KeyboardButton("🔙 প্রধান মেনু"))
     return markup
 
 def category_bottom_keyboard(chat_id):
     rates = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        KeyboardButton(f"📘 FB Cookies (৳{rates['fb_cookie']})"),
+        KeyboardButton(f"📄 FB Cookies (৳{rates['fb_cookie']})"),
         KeyboardButton(f"🔐 FB 2FA (৳{rates['fb_2fa']})")
     )
     markup.add(
-        KeyboardButton(f"📸 IG Cookies (৳{rates['ig_cookie']})"),
+        KeyboardButton(f"📷 IG Cookies (৳{rates['ig_cookie']})"),
         KeyboardButton(f"🔐 IG 2FA (৳{rates['ig_2fa']})")
     )
-    markup.add(KeyboardButton("🔙 মেইন মেনু"))
+    markup.add(KeyboardButton("🔙 প্রধান মেনু"))
     return markup
 
-def tools_bottom_keyboard(chat_id):
+def helper_tools_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🔑 2FA কোড জেনারেটর"), KeyboardButton("🔍 লিংক থেকে UID"))
-    markup.add(KeyboardButton("🔍 UID Live Checker"), KeyboardButton("📧 টেম্প ইমেইল"))
+    markup.add(KeyboardButton("🔍 UID Live Checker"), KeyboardButton("✉️ টেম্প ইমেইল"))
     markup.add(KeyboardButton("🚀 বাল্ক FB লাইভ চেকার"), KeyboardButton("🚀 বাল্ক IG লাইভ চেকার"))
-    markup.add(KeyboardButton("👤 রেন্ডম নাম জেনারেটর"), KeyboardButton("🔙 মেইন মেনু"))
+    markup.add(KeyboardButton("👤 র্যান্ডম নাম জেনারেটর"), KeyboardButton("🔙 প্রধান মেনু"))
+    return markup
+
+def account_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(KeyboardButton("💳 Withdraw"), KeyboardButton("🪪 ভেরিফাইড আইডি কার্ড"))
+    markup.add(KeyboardButton("🔙 প্রধান মেনু"))
+    return markup
+
+def bonus_support_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(KeyboardButton("🎁 Claim Daily Bonus"), KeyboardButton("🏆 লিডারবোর্ড"))
+    markup.add(KeyboardButton("💬 এডমিন সাপোর্ট টিকিট"))
+    markup.add(KeyboardButton("🔙 প্রধান মেনু"))
     return markup
 
 def admin_bottom_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("⏳ পেন্ডিং এপ্রুভাল (Manual)"), KeyboardButton("📂 ক্যাটাগরি এক্সপোর্ট"))
-    markup.add(KeyboardButton("💰 Rate Config"), KeyboardButton("📊 Team Stats"))
-    markup.add(KeyboardButton("📥 Export Excel"), KeyboardButton("📊 দৈনিক রিপোর্ট"))
-    markup.add(KeyboardButton("📢 Broadcast Notice"), KeyboardButton("⚡ Set Surge"))
-    markup.add(KeyboardButton("⚙️ System Health"), KeyboardButton("🔓 Release Escrow"))
-    markup.add(KeyboardButton("🔙 Main Menu"))
+    markup.add(KeyboardButton("⏳ পেন্ডিং এপ্রুভাল (Manual)"), KeyboardButton("📊 টিম ও দৈনিক রিপোর্ট"))
+    markup.add(KeyboardButton("⚙️ সেট রেট ও চার্জ"), KeyboardButton("📂 ফাইল এক্সপোর্ট"))
+    markup.add(KeyboardButton("📢 ব্রডকাস্ট নোটিশ"), KeyboardButton("🔙 প্রধান মেনু"))
     return markup
 
 def admin_export_category_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("📄 Export FB Cookies"), KeyboardButton("📄 Export FB 2FA"))
     markup.add(KeyboardButton("📸 Export IG Cookies"), KeyboardButton("📸 Export IG 2FA"))
-    markup.add(KeyboardButton("🔙 Main Menu"))
+    markup.add(KeyboardButton("🔙 প্রধান মেনু"))
     return markup
 
 def cancel_keyboard(chat_id):
@@ -615,113 +519,7 @@ def cancel_keyboard(chat_id):
     markup.add(KeyboardButton("❌ বাতিল করুন"))
     return markup
 
-# ================= 8. Manual Admin Approval (Paginated) & Actions =================
-
-@bot.message_handler(func=lambda msg: msg.text in ["⏳ পেন্ডিং এপ্রুভাল (Manual)", "⏳ Pending Approvals"] or msg.text.startswith("/pending"))
-def admin_pending_approvals(message):
-    if message.chat.id != ADMIN_ID:
-        return
-    
-    parts = message.text.split()
-    page = 1
-    if len(parts) > 1 and parts[1].isdigit():
-        page = int(parts[1])
-        
-    items_per_page = 5
-    skip_count = (page - 1) * items_per_page
-    
-    total_pending = submissions_col.count_documents({"status": "Hold"})
-    
-    if total_pending == 0:
-        bot.send_message(ADMIN_ID, "📭 বর্তমানে কোনো পেন্ডিং সাবমিশন নেই!")
-        return
-        
-    pending_subs = list(
-        submissions_col.find({"status": "Hold"})
-        .sort("date_obj", 1)
-        .skip(skip_count)
-        .limit(items_per_page)
-    )
-    
-    if not pending_subs and page > 1:
-        bot.send_message(ADMIN_ID, "⚠️ এই পেজে আর কোনো সাবমিশন নেই।")
-        return
-        
-    total_pages = (total_pending + items_per_page - 1) // items_per_page
-    
-    header_text = (
-        f"🔔 **PENDING APPROVALS QUEUE** (Page {page}/{total_pages})\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"মোট পেন্ডিং সাবমিশন: **{total_pending}টি**\n"
-    )
-    bot.send_message(ADMIN_ID, header_text)
-    
-    for sub in pending_subs:
-        text = (
-            f"📌 Track ID: `{sub['track_id']}`\n"
-            f"👤 Worker ID: `{sub['chat_id']}`\n"
-            f"🆔 UID: `{sub['uid']}`\n"
-            f"🛡️ Category: `{sub.get('category', 'FB Cookies')}`\n"
-            f"💰 Amount: ৳{sub['rate']}\n\n"
-            f"এপ্রুভ: `/appr {sub['track_id']}` | রিজেক্ট: `/rej {sub['track_id']}`"
-        )
-        bot.send_message(ADMIN_ID, text)
-        
-    nav_text = "📄 **পেজ নেভিগেশন:**\n"
-    if page < total_pages:
-        nav_text += f"পরবর্তী পেজ দেখতে লিখুন: `/pending {page + 1}`\n"
-    if page > 1:
-        nav_text += f"পূর্ববর্তী পেজ দেখতে লিখুন: `/pending {page - 1}`"
-        
-    if total_pages > 1:
-        bot.send_message(ADMIN_ID, nav_text)
-
-@bot.message_handler(commands=['appr', 'rej'])
-def handle_admin_text_action(message):
-    if message.chat.id != ADMIN_ID:
-        return
-        
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.send_message(ADMIN_ID, "⚠️ সঠিক ফরম্যাট ব্যবহার করুন: `/appr TRACK_ID` অথবা `/rej TRACK_ID`")
-        return
-        
-    action = parts[0]
-    track_id = parts[1]
-    sub = submissions_col.find_one({"track_id": track_id})
-    
-    if not sub or sub.get("status") != "Hold":
-        bot.send_message(ADMIN_ID, "⚠️ সাবমিশনটি পাওয়া যায়নি বা ইতিমধ্যে প্রসেস করা হয়েছে!")
-        return
-        
-    user_id = sub["chat_id"]
-    rate = float(sub["rate"])
-    
-    if action == "/appr":
-        submissions_col.update_one({"track_id": track_id}, {"$set": {"status": "Approved"}})
-        users_col.update_one({"_id": user_id}, {"$inc": {"balance": rate, "hold_balance": -rate}})
-        bot.send_message(ADMIN_ID, f"✅ ট্র্যাকিং আইডি `{track_id}` সফলভাবে এপ্রুভ করা হয়েছে!")
-        try:
-            bot.send_message(user_id, f"🎉 আপনার ট্র্যাকিং আইডি `{track_id}` এর জন্য ৳{rate:.2f} মেইন ব্যালেন্সে যুক্ত করা হয়েছে!")
-        except Exception:
-            pass
-    else:
-        submissions_col.update_one({"track_id": track_id}, {"$set": {"status": "Rejected"}})
-        users_col.update_one({"_id": user_id}, {"$inc": {"hold_balance": -rate}})
-        bot.send_message(ADMIN_ID, f"❌ ট্র্যাকিং আইডি `{track_id}` বাতিল করা হয়েছে!")
-        try:
-            bot.send_message(user_id, f"❌ আপনার ট্র্যাকিং আইডি `{track_id}` এর সাবমিশন বাতিল করা হয়েছে।")
-        except Exception:
-            pass
-
-@bot.message_handler(commands=['daily_report'])
-def handle_daily_report_cmd(message):
-    if message.chat.id != ADMIN_ID:
-        return
-    report_text = generate_daily_report_text()
-    bot.send_message(ADMIN_ID, report_text)
-
-# ================= 9. Core Telegram Router & Handlers =================
+# ================= 8. Core Telegram Router & Handlers =================
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -764,101 +562,35 @@ def send_welcome(message):
         bot.send_message(chat_id, "🔒 **চ্যানেল ভেরিফিকেশন প্রয়োজন:**", reply_markup=markup)
         return
 
-    bot.send_message(chat_id, "👑 **ONLINE EARNING BAZAR**\n───────────────\nস্বাগতম! নিচের বাটন থেকে কাজ সিলেক্ট করুন।", reply_markup=main_bottom_keyboard(chat_id))
+    bot.send_message(chat_id, "👑 **ONLINE EARNING BAZAR**\n───────────────\nস্বাগতম! নিচের অপশন থেকে নির্বাচন করুন:", reply_markup=main_bottom_keyboard(chat_id))
 
-@bot.message_handler(commands=['ban', 'unban'])
-def handle_ban_unban(message):
-    chat_id = message.chat.id
-    if chat_id != ADMIN_ID:
+@bot.message_handler(commands=['appr', 'rej'])
+def handle_admin_text_action(message):
+    if message.chat.id != ADMIN_ID:
         return
     parts = message.text.split()
-    if len(parts) != 2 or not parts[1].isdigit():
-        bot.send_message(chat_id, "⚠️ ফরম্যাট: `/ban 12345678` বা `/unban 12345678`")
+    if len(parts) < 2:
+        bot.send_message(ADMIN_ID, "⚠️ ফরম্যাট: `/appr TRACK_ID` বা `/rej TRACK_ID`")
         return
-    target_id = int(parts[1])
-    is_banning = message.text.startswith('/ban')
-    users_col.update_one({"_id": target_id}, {"$set": {"banned": is_banning}}, upsert=True)
-    status_str = "🔴 BANNED" if is_banning else "🟢 UNBANNED"
-    bot.send_message(chat_id, f"✅ ইউজার `{target_id}` এখন {status_str}")
-
-@bot.message_handler(commands=['addtask'])
-def add_custom_task(message):
-    chat_id = message.chat.id
-    if chat_id != ADMIN_ID:
+    action, track_id = parts[0], parts[1]
+    sub = submissions_col.find_one({"track_id": track_id})
+    if not sub or sub.get("status") != "Hold":
+        bot.send_message(ADMIN_ID, "⚠️ সাবমিশনটি পাওয়া যায়নি বা ইতিমধ্যে প্রসেস করা হয়েছে!")
         return
-    parts = message.text.replace("/addtask", "").strip().split("|")
-    if len(parts) == 3:
-        try:
-            reward = float(parts[0].strip())
-            title = parts[1].strip()
-            link = parts[2].strip()
-            task_id = f"TSK-{random.randint(1000, 9999)}"
-            custom_tasks_col.insert_one({
-                "task_id": task_id,
-                "title": title,
-                "reward": reward,
-                "link": link,
-                "status": "Active"
-            })
-            bot.send_message(chat_id, f"✅ টাস্ক যুক্ত হয়েছে!\nID: `{task_id}`\nReward: ৳{reward}")
-        except ValueError:
-            bot.send_message(chat_id, "❌ এরর: রিওয়ার্ড অবশ্যই সংখ্যা হতে হবে।")
+    user_id = sub["chat_id"]
+    rate = float(sub["rate"])
+    if action == "/appr":
+        submissions_col.update_one({"track_id": track_id}, {"$set": {"status": "Approved"}})
+        users_col.update_one({"_id": user_id}, {"$inc": {"balance": rate, "hold_balance": -rate}})
+        bot.send_message(ADMIN_ID, f"✅ ট্র্যাকিং আইডি `{track_id}` এপ্রুভড!")
+        try: bot.send_message(user_id, f"🎉 আপনার ট্র্যাকিং আইডি `{track_id}` এর জন্য ৳{rate:.2f} মেইন ব্যালেন্সে যুক্ত হয়েছে!")
+        except Exception: pass
     else:
-        bot.send_message(chat_id, "⚠️ ফরম্যাট: `/addtask 2.5 | Channel Subscribe | https://t.me/xyz`")
-
-@bot.message_handler(commands=['setsurge'])
-def set_surge(message):
-    chat_id = message.chat.id
-    if chat_id != ADMIN_ID:
-        return
-    parts = message.text.replace("/setsurge", "").strip().split("|")
-    if len(parts) == 2:
-        try:
-            bonus = float(parts[0].strip())
-            hours = float(parts[1].strip())
-            exp = datetime.datetime.now() + timedelta(hours=hours)
-            update_setting("surge_pricing", {"active": True, "bonus": bonus, "expires_at": exp})
-            bot.send_message(chat_id, f"⚡ **Surge Pricing On!**\nঅতিরিক্ত ৳{bonus} বোনাস (মেয়াদ {hours} ঘণ্টা)।")
-        except ValueError:
-            bot.send_message(chat_id, "❌ ইনপুট সংখ্যায় দিন।")
-    else:
-        bot.send_message(chat_id, "⚠️ নিয়ম: `/setsurge 2.0 | 3` (৩ ঘণ্টার জন্য ২ টাকা বোনাস)")
-
-@bot.message_handler(commands=['releaseescrow'])
-def release_escrow(message):
-    chat_id = message.chat.id
-    if chat_id != ADMIN_ID:
-        return
-    pending_subs = submissions_col.find({"status": "Hold"})
-    count = 0
-    for sub in pending_subs:
-        users_col.update_one({"_id": sub["chat_id"]}, {"$inc": {"balance": sub["rate"], "hold_balance": -sub["rate"]}})
-        submissions_col.update_one({"_id": sub["_id"]}, {"$set": {"status": "Approved"}})
-        count += 1
-    bot.send_message(chat_id, f"✅ মোট {count} টি সাবমিশনের এসক্রো ব্যালেন্স ম্যানুয়ালি প্রসেস করা হয়েছে।")
-
-@bot.message_handler(commands=['broadcast_tier'])
-def broadcast_tier_cmd(message):
-    chat_id = message.chat.id
-    if chat_id != ADMIN_ID:
-        return
-    parts = message.text.split(" ", 2)
-    if len(parts) < 3:
-        bot.send_message(chat_id, "⚠️ ব্যবহার: `/broadcast_tier GOLD মেসেজ...`")
-        return
-    tier_target, msg_text = parts[1].upper(), parts[2]
-    users = users_col.find({"banned": False})
-    count = 0
-    for u in users:
-        c_count = submissions_col.count_documents({"chat_id": u["_id"]})
-        t_name, _ = calculate_worker_tier(c_count)
-        if tier_target in t_name.upper():
-            try:
-                bot.send_message(u["_id"], f"🌟 **[{tier_target} WORKER NOTICE]**\n\n{msg_text}")
-                count += 1
-            except Exception:
-                pass
-    bot.send_message(chat_id, f"✅ {count} জন {tier_target} ওয়ার্কারকে নোটিশ পাঠানো হয়েছে।")
+        submissions_col.update_one({"track_id": track_id}, {"$set": {"status": "Rejected"}})
+        users_col.update_one({"_id": user_id}, {"$inc": {"hold_balance": -rate}})
+        bot.send_message(ADMIN_ID, f"❌ ট্র্যাকিং আইডি `{track_id}` বাতিল করা হয়েছে!")
+        try: bot.send_message(user_id, f"❌ আপনার ট্র্যাকিং আইডি `{track_id}` এর সাবমিশন বাতিল করা হয়েছে।")
+        except Exception: pass
 
 @bot.message_handler(content_types=['document'])
 def handle_excel_document(message):
@@ -952,43 +684,6 @@ def handle_all_callbacks(call):
         else:
             bot.send_message(chat_id, "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি!")
 
-    elif code == "ui_id_card":
-        buf = generate_worker_badge_image_py(chat_id, call.from_user.first_name, 150)
-        bot.send_photo(chat_id, buf, caption="🪪 *আপনার ভেরিফাইড আইডি কার্ড!*")
-
-    elif code == "claim_daily_bonus":
-        user = get_user_data(chat_id)
-        last_bonus = user.get("last_bonus_date")
-        now = datetime.datetime.now()
-        if last_bonus and (now - last_bonus) < timedelta(hours=24):
-            bot.answer_callback_query(call.id, "⚠️ ২৪ ঘণ্টার মধ্যে একবারই ডেইলি বোনাস নেওয়া যায়!", show_alert=True)
-        else:
-            update_user_field(chat_id, "balance", user.get("balance", 0.0) + 2.0)
-            update_user_field(chat_id, "last_bonus_date", now)
-            bot.send_message(chat_id, "🎉 অভিনন্দন! আপনি ৳2.00 ডেইলি বোনাস পেয়েছেন।")
-
-    elif code == "open_support_ticket":
-        user_states[chat_id] = {'step': 'AWAITING_SUPPORT_MSG'}
-        bot.send_message(chat_id, "💬 আপনার সমস্যা বা বার্তাটি লিখুন:", reply_markup=cancel_keyboard(chat_id))
-
-    elif code == "prof_withdraw":
-        user = get_user_data(chat_id)
-        bal = user.get("balance", 0.0)
-        if bal < 50.0:
-            bot.send_message(chat_id, f"⚠️ সর্বনিম্ন উইথড্র ৳৫০.০০। আপনার ব্যালেন্স: ৳{bal:.2f}")
-        else:
-            user_states[chat_id] = {'step': 'AWAITING_WITHDRAW_DETAILS'}
-            bot.send_message(chat_id, "💳 বিকাশ/নগদ নাম্বার ও পরিমাণ লিখুন (যেমন: `01700000000 | 100`):", reply_markup=cancel_keyboard(chat_id))
-
-    elif code.startswith("poll_vote_"):
-        vote_option = code.replace("poll_vote_", "")
-        poll_votes_col.update_one(
-            {"worker_id": str(chat_id)},
-            {"$set": {"vote_option": vote_option, "timestamp": datetime.datetime.now()}},
-            upsert=True
-        )
-        bot.answer_callback_query(call.id, "✅ আপনার ভোট গৃহীত হয়েছে!", show_alert=True)
-
 @bot.message_handler(func=lambda msg: True)
 def main_router(message):
     chat_id = message.chat.id
@@ -998,22 +693,30 @@ def main_router(message):
     text = message.text.strip() if message.text else ""
     user = get_user_data(chat_id)
 
-    # 1. System Return / Cancel Rules
-    if text in ["🔙 Main Menu", "🔙 মেইন মেনু", "❌ Cancel", "❌ বাতিল করুন"]:
+    # 1. প্রধান মেনুতে ফেরা / বাতিল করা
+    if text in ["🔙 প্রধান মেনু", "🔙 Main Menu", "❌ Cancel", "❌ বাতিল করুন"]:
         user_states.pop(chat_id, None)
-        bot.send_message(chat_id, "🏠 মেইন মেনু:", reply_markup=main_bottom_keyboard(chat_id))
+        bot.send_message(chat_id, "🏠 প্রধান মেনু:", reply_markup=main_bottom_keyboard(chat_id))
         return
 
-    # 2. Main Navigation Routers
-    if text in ["📋 Tasks & Work", "📋 টাস্ক ও কাজ"]:
-        bot.send_message(chat_id, "📋 টাস্ক ও কাজ বেছে নিন:", reply_markup=task_sub_keyboard(chat_id))
+    # 2. মূল ক্যাটাগরি মেনু হ্যান্ডলার
+    if text == "💼 টাস্ক ও টুলস":
+        bot.send_message(chat_id, "💼 **টাস্ক ও টুলস** সেকশনে স্বাগতম:", reply_markup=tasks_and_tools_keyboard())
         return
 
-    elif text in ["🛠️ Helper Tools", "🛠️ হেল্পার টুলস"]:
-        bot.send_message(chat_id, "🛠️ আপনার প্রয়োজনীয় টুল বেছে নিন:", reply_markup=tools_bottom_keyboard(chat_id))
+    elif text == "📋 কাজ জমা দিন":
+        bot.send_message(chat_id, "📋 **কাজ জমা দেওয়ার ধরণ বেছে নিন:**", reply_markup=submit_tasks_keyboard())
         return
 
-    elif text in ["👤 My Profile", "👤 আমার অ্যাকাউন্ট"]:
+    elif text == "🛠 হেল্পার টুলস":
+        bot.send_message(chat_id, "🛠 **আপনার প্রয়োজনীয় টুল বেছে নিন:**", reply_markup=helper_tools_keyboard())
+        return
+
+    elif text == "📌 সিঙ্গেল জমা":
+        bot.send_message(chat_id, "📌 **ক্যাটাগরি বেছে নিন:**", reply_markup=category_bottom_keyboard(chat_id))
+        return
+
+    elif text == "👤 আমার অ্যাকাউন্ট":
         cnt = submissions_col.count_documents({"chat_id": chat_id})
         bal = user.get("balance", 0.0)
         hold_bal = user.get("hold_balance", 0.0)
@@ -1021,23 +724,50 @@ def main_router(message):
         ref_link = f"https://t.me/{bot.get_me().username}?start={chat_id}"
         
         msg_str = (
-            f"👤 **ওয়ার্কার প্রোফাইল**\n───────────────\n"
-            f"🔹 **নাম:** `{message.from_user.first_name}`\n"
-            f"🏷️ **টিয়ার:** `{tier_name}`\n"
-            f"🔹 **মোট কাজ:** `{cnt}` টি\n"
-            f"💰 **মেইন ব্যালেন্স:** `৳{bal:.2f}`\n"
-            f"⏳ **এসক্রো হোল্ড:** `৳{hold_bal:.2f}`\n\n"
-            f"🔗 **রেফারেল লিংক:**\n`{ref_link}`"
+            f"👤 **নাম:** `{message.from_user.first_name}`\n"
+            f"🎖 **টিয়ার:** `{tier_name}`\n"
+            f"📊 **মোট কাজ:** `{cnt}` টি\n"
+            f"💰 **মেইন ব্যালেন্স:** `৳{bal:.2f}` | **এসক্রো হোল্ড:** `৳{hold_bal:.2f}`\n"
+            f"🔗 **রেফারেল লিঙ্ক:** {ref_link}"
         )
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton("💳 Withdraw", callback_data="prof_withdraw"),
-            InlineKeyboardButton("🪪 ভেরিফাইড আইডি কার্ড", callback_data="ui_id_card")
-        )
-        bot.send_message(chat_id, msg_str, reply_markup=markup)
+        bot.send_message(chat_id, msg_str, reply_markup=account_keyboard(), disable_web_page_preview=True)
         return
 
-    elif text in ["🏆 Leaderboard", "🏆 লিডারবোর্ড"]:
+    elif text == "🎁 বোনাস ও সাপোর্ট":
+        bot.send_message(chat_id, "🎁 **বোনাস ও সাপোর্ট সেন্টার:**", reply_markup=bonus_support_keyboard())
+        return
+
+    elif text == "👑 এডমিন প্যানেল" and chat_id == ADMIN_ID:
+        bot.send_message(chat_id, "👑 **এডমিন প্যানেল**", reply_markup=admin_bottom_keyboard())
+        return
+
+    # 3. একাউন্ট ও বোনাস সার্ভিসসমূহ
+    elif text == "💳 Withdraw":
+        bal = user.get("balance", 0.0)
+        if bal < 50.0:
+            bot.send_message(chat_id, f"⚠️ সর্বনিম্ন উইথড্র ৳৫০.০০। আপনার বর্তমান ব্যালেন্স: ৳{bal:.2f}")
+        else:
+            user_states[chat_id] = {'step': 'AWAITING_WITHDRAW_DETAILS'}
+            bot.send_message(chat_id, "💳 বিকাশ/নগদ নাম্বার ও পরিমাণ লিখুন (যেমন: `01700000000 | 100`):", reply_markup=cancel_keyboard(chat_id))
+        return
+
+    elif text == "🪪 ভেরিফাইড আইডি কার্ড":
+        buf = generate_worker_badge_image_py(chat_id, message.from_user.first_name, 150)
+        bot.send_photo(chat_id, buf, caption="🪪 *আপনার ভেরিফাইড আইডি কার্ড!*")
+        return
+
+    elif text == "🎁 Claim Daily Bonus":
+        last_bonus = user.get("last_bonus_date")
+        now = datetime.datetime.now()
+        if last_bonus and (now - last_bonus) < timedelta(hours=24):
+            bot.send_message(chat_id, "⚠️ ২৪ ঘণ্টার মধ্যে একবারই ডেইলি বোনাস নেওয়া যায়!")
+        else:
+            update_user_field(chat_id, "balance", user.get("balance", 0.0) + 2.0)
+            update_user_field(chat_id, "last_bonus_date", now)
+            bot.send_message(chat_id, "🎉 অভিনন্দন! আপনি ৳2.00 ডেইলি বোনাস পেয়েছেন।")
+        return
+
+    elif text == "🏆 লিডারবোর্ড":
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         pipeline = [
             {"$match": {"date_str": {"$regex": f"^{today}"}}},
@@ -1055,44 +785,29 @@ def main_router(message):
         bot.send_message(chat_id, res)
         return
 
-    elif text in ["🎁 Daily Bonus & Tasks", "🎁 বোনাস ও টাস্ক"]:
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🎁 Claim Daily Bonus", callback_data="claim_daily_bonus"))
-        bot.send_message(chat_id, "🎁 **বোনাস সেন্টার:**", reply_markup=markup)
+    elif text == "💬 এডমিন সাপোর্ট টিকিট":
+        user_states[chat_id] = {'step': 'AWAITING_SUPPORT_MSG'}
+        bot.send_message(chat_id, "💬 আপনার সমস্যা বা বার্তাটি লিখুন:", reply_markup=cancel_keyboard(chat_id))
         return
 
-    elif text in ["📞 Support & Rules", "📞 সাপোর্ট ও রুলস"]:
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("💬 এডমিন সাপোর্ট টিকিট", callback_data="open_support_ticket"))
-        bot.send_message(chat_id, "📞 **সাপোর্ট সেন্টার:**", reply_markup=markup)
-        return
-
-    elif text in ["👑 Admin Panel", "👑 এডমিন প্যানেল"] and chat_id == ADMIN_ID:
-        bot.send_message(chat_id, "👑 **ADMIN PANEL**", reply_markup=admin_bottom_keyboard())
-        return
-
-    # 3. Sub-task Navigation Rules
-    elif text in ["📥 Single Submit", "📥 সিঙ্গেল জমা"]:
-        bot.send_message(chat_id, "📌 ক্যাটাগরি বেছে নিন:", reply_markup=category_bottom_keyboard(chat_id))
-        return
-
-    elif text in ["📦 Bulk Submit (Text)", "📦 বাল্ক জমা (Text)"]:
+    # 4. টাস্ক ও হেল্পার টুলস হ্যান্ডলার
+    elif text in ["📦 বাল্ক জমা (Text)"]:
         user_states[chat_id] = {'step': 'AWAITING_BULK_TEXT'}
         bot.send_message(chat_id, "📦 **আপনার অ্যাকাউন্টগুলোর লিস্ট এখানে একসাথে পেস্ট করুন:**\n\n*(কুকিজ বা ২এফএ ডেটা লাইন বাই লাইন পেস্ট করুন)*", reply_markup=cancel_keyboard(chat_id))
         return
 
-    elif text in ["📊 Excel Submit", "📊 এক্সেল ফাইল জমা"]:
+    elif text in ["📊 এক্সেল ফাইল জমা"]:
         user_states[chat_id] = {'step': 'AWAITING_EXCEL_FILE'}
         bot.send_message(chat_id, "📊 **আপনার .CSV বা .XLSX ফাইলটি এখানে পাঠান:**\n\n*(প্রথম ৩টি কলাম: UID, Password, Cookies/2FA)*", reply_markup=cancel_keyboard(chat_id))
         return
 
-    elif text in ["⚙️ Password Rules", "⚙️ পাসওয়ার্ড নিয়ম"]:
+    elif text in ["⚙️ পাসওয়ার্ড নিয়ম"]:
         p_rule = get_setting("pass_rule", "20")
         msg = f"⚙️ **পাসওয়ার্ড নিয়মাবলী:**\n───────────────\nডিফল্ট সেভ পাসওয়ার্ড: `{p_rule}`\n\nসকল অ্যাকাউন্টে এই নির্ধারিত পাসওয়ার্ড ফরম্যাট ব্যবহার বাধ্যতামূলক।"
         bot.send_message(chat_id, msg)
         return
 
-    elif any(text.startswith(p) for p in ["📘 FB Cookies", "🔐 FB 2FA", "📸 IG Cookies", "🔐 IG 2FA"]):
+    elif any(text.startswith(p) for p in ["📄 FB Cookies", "🔐 FB 2FA", "📷 IG Cookies", "🔐 IG 2FA"]):
         cat = "fb_cookie"
         if "FB 2FA" in text: cat = "fb_2fa"
         elif "IG Cookies" in text: cat = "ig_cookie"
@@ -1102,90 +817,80 @@ def main_router(message):
         bot.send_message(chat_id, "🆔 **UID** বা প্রোফাইল লিংক দিন:", reply_markup=cancel_keyboard(chat_id))
         return
 
-    # 4. Helper Tools Routers
-    elif text in ["🔑 2FA Code Gen", "🔑 2FA কোড জেনারেটর"]:
+    elif text == "🔑 2FA কোড জেনারেটর":
         user_states[chat_id] = {'step': 'AWAITING_2FA_GEN'}
         bot.send_message(chat_id, "📌 আপনার **2FA Secret Key** পাঠান:", reply_markup=cancel_keyboard(chat_id))
         return
 
-    elif text in ["🔍 UID Live Checker"]:
+    elif text == "🔍 UID Live Checker":
         user_states[chat_id] = {'step': 'AWAITING_UID_CHECK'}
         bot.send_message(chat_id, "🔍 চেক করার জন্য **Facebook UID** পাঠান:", reply_markup=cancel_keyboard(chat_id))
         return
 
-    elif text in ["🔍 Link to UID", "🔍 লিংক থেকে UID"]:
+    elif text == "🔍 লিংক থেকে UID":
         user_states[chat_id] = {'step': 'AWAITING_LINK_TO_UID'}
         bot.send_message(chat_id, "🔍 আপনার প্রোফাইল লিংকটি পাঠান:", reply_markup=cancel_keyboard(chat_id))
         return
 
-    elif text in ["🚀 বাল্ক FB লাইভ চেকার"]:
+    elif text == "🚀 বাল্ক FB লাইভ চেকার":
         user_states[chat_id] = {'step': 'AWAITING_BULK_FB_CHECK'}
         bot.send_message(chat_id, "🔍 একসাথে ১০০+ ফেসবুক UID পেস্ট করুন, সিস্টেম চেক করে লাইভ/ডেড রিপোর্ট জানাবে:", reply_markup=cancel_keyboard(chat_id))
         return
 
-    elif text in ["🚀 বাল্ক IG লাইভ চেকার"]:
+    elif text == "🚀 বাল্ক IG লাইভ চেকার":
         user_states[chat_id] = {'step': 'AWAITING_BULK_IG_CHECK'}
         bot.send_message(chat_id, "🔍 একসাথে ১০০+ ইনস্টাগ্রাম ইউজারনেম পেস্ট করুন, সিস্টেম চেক করে লাইভ/ডেড রিপোর্ট জানাবে:", reply_markup=cancel_keyboard(chat_id))
         return
 
-    elif text in ["📧 Temp Mailbox", "📧 টেম্প ইমেইল"]:
+    elif text == "✉️ টেম্প ইমেইল":
         username = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=10))
         email = f"{username}@1secmail.com"
-        bot.send_message(chat_id, f"📧 **Temp Email:**\n`{email}`")
+        bot.send_message(chat_id, f"✉️ **Temp Email:**\n`{email}`")
         return
 
-    elif text in ["👤 Random Name Generator", "👤 রেন্ডম নাম জেনারেটর"]:
+    elif text == "👤 র্যান্ডম নাম জেনারেটর":
         first_names = ["Tanvir", "Rahim", "Sakib", "Rakibul", "Nayeem", "Arman"]
         last_names = ["Ahmed", "Uddin", "Khan", "Islam", "Hasan", "Chowdhury"]
         full_name = f"{random.choice(first_names)} {random.choice(last_names)}"
         bot.send_message(chat_id, f"👤 **রেন্ডম নাম জেনারেটেড:**\n`{full_name}`")
         return
 
-    # 5. Admin Bottom Keyboard Handlers
-    elif text == "💰 Rate Config" and chat_id == ADMIN_ID:
+    # 5. এডমিন প্যানেল হ্যান্ডলার
+    elif text == "⏳ পেন্ডিং এপ্রুভাল (Manual)" and chat_id == ADMIN_ID:
+        pending_subs = list(submissions_col.find({"status": "Hold"}).limit(5))
+        if not pending_subs:
+            bot.send_message(ADMIN_ID, "📭 বর্তমানে কোনো পেন্ডিং সাবমিশন নেই!")
+            return
+        for sub in pending_subs:
+            text_msg = (
+                f"📌 Track ID: `{sub['track_id']}`\n"
+                f"👤 Worker ID: `{sub['chat_id']}`\n"
+                f"🆔 UID: `{sub['uid']}`\n"
+                f"💰 Amount: ৳{sub['rate']}\n\n"
+                f"এপ্রুভ: `/appr {sub['track_id']}` | রিজেক্ট: `/rej {sub['track_id']}`"
+            )
+            bot.send_message(ADMIN_ID, text_msg)
+        return
+
+    elif text == "📊 টিম ও দৈনিক রিপোর্ট" and chat_id == ADMIN_ID:
+        report_text = generate_daily_report_text()
+        bot.send_message(ADMIN_ID, report_text)
+        return
+
+    elif text == "⚙️ সেট রেট ও চার্জ" and chat_id == ADMIN_ID:
         rates = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
         msg = (
-            f"💰 **CURRENT RATES CONFIGURATION**\n───────────────\n"
-            f"📘 FB Cookie: ৳{rates.get('fb_cookie', 5.0)}\n"
+            f"⚙️ **CURRENT RATES CONFIGURATION**\n───────────────\n"
+            f"📄 FB Cookie: ৳{rates.get('fb_cookie', 5.0)}\n"
             f"🔐 FB 2FA: ৳{rates.get('fb_2fa', 6.0)}\n"
-            f"📸 IG Cookie: ৳{rates.get('ig_cookie', 8.0)}\n"
-            f"🔐 IG 2FA: ৳{rates.get('ig_2fa', 10.0)}"
+            f"📷 IG Cookie: ৳{rates.get('ig_cookie', 8.0)}\n"
+            f"🔐 IG 2FA: ৳{rates.get('ig_2fa', 10.0)}\n\n"
+            f"সার্জ সেট করতে কমান্ড দিন: `/setsurge 2.0 | 3`"
         )
         bot.send_message(chat_id, msg)
         return
 
-    elif text == "📊 Team Stats" and chat_id == ADMIN_ID:
-        total_u = users_col.count_documents({})
-        total_s = submissions_col.count_documents({})
-        pending_s = submissions_col.count_documents({"status": "Hold"})
-        approved_s = submissions_col.count_documents({"status": "Approved"})
-        msg = (
-            f"📊 **SYSTEM & TEAM STATS**\n───────────────\n"
-            f"👥 মোট ইউজার: **{total_u}** জন\n"
-            f"📦 মোট কাজ জমা: **{total_s}** টি\n"
-            f"⏳ পেন্ডিং (হোল্ড): **{pending_s}** টি\n"
-            f"✅ এপ্রুভড: **{approved_s}** টি"
-        )
-        bot.send_message(chat_id, msg)
-        return
-
-    elif text == "📥 Export Excel" and chat_id == ADMIN_ID:
-        approved = list(submissions_col.find({"status": "Approved"}))
-        if not approved:
-            bot.send_message(chat_id, "📭 কোনো এপ্রুভড ডেটা পাওয়া যায়নি!")
-            return
-        df = pd.DataFrame(approved)
-        if '_id' in df.columns:
-            df['_id'] = df['_id'].astype(str)
-        file_name = f"Approved_Submissions_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        df.to_excel(file_name, index=False)
-        with open(file_name, 'rb') as f:
-            bot.send_document(chat_id, f, caption="📥 **সকল এপ্রুভড ডেটা এক্সপোর্ট করা হয়েছে।**")
-        if os.path.exists(file_name):
-            os.remove(file_name)
-        return
-
-    elif text == "📂 ক্যাটাগরি এক্সপোর্ট" and chat_id == ADMIN_ID:
+    elif text == "📂 ফাইল এক্সপোর্ট" and chat_id == ADMIN_ID:
         bot.send_message(chat_id, "📥 **SELECT CATEGORY TO EXPORT:**", reply_markup=admin_export_category_keyboard())
         return
 
@@ -1216,39 +921,12 @@ def main_router(message):
             os.remove(file_name)
         return
 
-    elif text == "📊 দৈনিক রিপোর্ট" and chat_id == ADMIN_ID:
-        report_text = generate_daily_report_text()
-        bot.send_message(ADMIN_ID, report_text)
-        return
-
-    elif text == "📢 Broadcast Notice" and chat_id == ADMIN_ID:
+    elif text == "📢 ব্রডকাস্ট নোটিশ" and chat_id == ADMIN_ID:
         user_states[chat_id] = {'step': 'AWAITING_BROADCAST_MSG'}
         bot.send_message(chat_id, "📢 **সকল ইউজারকে পাঠানোর জন্য নোটিশ টেক্সট লিখুন:**", reply_markup=cancel_keyboard(chat_id))
         return
 
-    elif text == "⚡ Set Surge" and chat_id == ADMIN_ID:
-        surge = get_setting("surge_pricing", {"active": False, "bonus": 0.0, "expires_at": None})
-        status = "🟢 ACTIVE" if surge.get("active") else "🔴 INACTIVE"
-        bot.send_message(chat_id, f"⚡ **SURGE PRICING STATUS: {status}**\n\nসার্জ বোনাস সেট করতে কমান্ড দিন:\n`/setsurge BONUS_AMOUNT | HOURS`\n\nউদাহরণ: `/setsurge 2.0 | 3` (৩ ঘণ্টার জন্য ২ টাকা বাড়তি)")
-        return
-
-    elif text == "⚙️ System Health" and chat_id == ADMIN_ID:
-        active_threads = threading.active_count()
-        msg = (
-            f"⚙️ **SYSTEM HEALTH CHECK**\n───────────────\n"
-            f"🟢 Bot Engine Status: **ONLINE**\n"
-            f"🧵 Active Threads: **{active_threads}**\n"
-            f"🍃 MongoDB: **CONNECTED**\n"
-            f"⏰ Server Time: `{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`"
-        )
-        bot.send_message(chat_id, msg)
-        return
-
-    elif text == "🔓 Release Escrow" and chat_id == ADMIN_ID:
-        release_escrow(message)
-        return
-
-    # 6. Dynamic Multi-step Inputs Processing
+    # 6. মাল্টি-স্টেপ ডাটা ইনপুট প্রসেসিং
     state = user_states.get(chat_id)
     if not state:
         bot.send_message(chat_id, "নিচের কিবোর্ড থেকে অপশন বেছে নিন:", reply_markup=main_bottom_keyboard(chat_id))
@@ -1477,7 +1155,7 @@ def main_router(message):
         
         bot.send_message(chat_id, f"🎉 **কাজ জমা সফল হয়েছে!**\n📌 Track ID: `{track_id}`\n💰 আর্ন (এসক্রো হোল্ড): ৳{rate:.2f}\n\n*নোট: ২৪ ঘণ্টা পর টেস্ট শেষে টাকা মেইন ব্যালেন্সে যুক্ত হবে।*", reply_markup=main_bottom_keyboard(chat_id))
 
-# ================= 10. Server Runner (Render Webhook / Local Hybrid Execution) =================
+# ================= 9. Server Runner (Render Webhook / Local Hybrid Execution) =================
 
 if __name__ == "__main__":
     print("Zero-Bug Enterprise Production Python Bot Engine Active with 100% Feature Parity...")
