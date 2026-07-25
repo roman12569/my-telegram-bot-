@@ -220,12 +220,12 @@ def generate_worker_badge_image_py(worker_id, username, total_submissions):
     buf.seek(0)
     return buf
 
-# ================= 4. UI Keyboards (Smart Navigation) =================
+# ================= 4. UI Keyboards (PREMIUM GRID & EMOJI THEME) =================
 
 def main_bottom_keyboard(chat_id):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("💼 টাস্ক ও টুলস"), KeyboardButton("👤 আমার অ্যাকাউন্ট"))
-    markup.add(KeyboardButton("🎁 বোনাস ও সাপোর্ট"))
+    markup.add(KeyboardButton("🎁 বোনাস ও সাপোর্ট"), KeyboardButton("🏠 প্রধান মেনু"))
     if chat_id == ADMIN_ID: markup.add(KeyboardButton("👑 এডমিন প্যানেল"))
     return markup
 
@@ -576,7 +576,7 @@ def handle_document(message):
     try: _process_document(message)
     except Exception as e:
         log_ai_report("File Parse Error", str(e), "Caught exception gracefully.")
-        bot.reply_to(message, "❌ ফাইলটি পড়তে সমস্যা হয়েছে। দয়া করে সঠিক ফরম্যাটে ফাইল দিন।", reply_markup=main_bottom_keyboard(message.chat.id))
+        bot.reply_to(message, "❌ ফাইলটি পড়তে সমস্যা হয়েছে। দয়া করে সঠিক ফরম্যাটে ফাইল দিন.", reply_markup=main_bottom_keyboard(message.chat.id))
 
 def _process_document(message):
     chat_id = message.chat.id
@@ -633,7 +633,9 @@ def _process_document(message):
         success_count, total_earned = 0, 0.0
         now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
         user = get_user_data(chat_id)
-        default_pass = user.get("custom_password") or get_setting("pass_rule", "20")
+        
+        saved_pass = user.get("custom_password")
+        default_pass = saved_pass if (saved_pass and str(saved_pass).strip() != "" and str(saved_pass).lower() != "none") else get_setting("pass_rule", "20")
 
         for _, row in df.iterrows():
             vals = [str(x).strip() for x in row.values]
@@ -658,7 +660,6 @@ def _process_document(message):
                 })
                 success_count += 1; total_earned += rate
                 
-                # [LOG CHANNEL NOTIFICATION FIXED]
                 try:
                     bot.send_message(
                         LOG_CHANNEL_ID,
@@ -901,7 +902,7 @@ def _process_main_router(message):
     elif text == "⚙️ পাসওয়ার্ড নিয়ম":
         p_rule = get_setting("pass_rule", "20")
         custom_p = user.get("custom_password", "")
-        return bot.send_message(chat_id, f"⚙️ <b>পাসওয়ার্ড নিয়মাবলী ও সেটিং:</b>\nআপনার সেভ করা পাসওয়ার্ড: {f'<code>{custom_p}</code>' if custom_p else '<i>কোনো ডিফল্ট পাসওয়ার্ড সেভ করা নেই</i>'}\n<i>(সিস্টেম অটো রুল: {p_rule})</i>", reply_markup=submit_tasks_keyboard())
+        return bot.send_message(chat_id, f"⚙️ <b>পাসওয়ার্ড নিয়মাবলী ও সেটিং:</b>\nআপনার সেভ করা পাসওয়ার্ড: {f'<code>{custom_p}</code>' if (custom_p and str(custom_p).strip() != '' and str(custom_p).lower() != 'none') else '<i>কোনো ডিফল্ট পাসওয়ার্ড সেভ করা নেই</i>'}\n<i>(সিস্টেম অটো রুল: {p_rule})</i>", reply_markup=submit_tasks_keyboard())
     elif any(text.startswith(p) for p in ["📄 FB Cookies", "🔐 FB 2FA", "📷 IG Cookies", "🔐 IG 2FA"]):
         cat = "fb_cookie"
         if "FB 2FA" in text: cat = "fb_2fa"
@@ -1022,7 +1023,9 @@ def _process_main_router(message):
         lines = [l.strip() for l in text.split("\n") if l.strip()]
         success_list, dup_list, total_earned = [], [], 0.0
         now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
-        password_to_use = user.get("custom_password") or get_setting("pass_rule", "20")
+        
+        saved_pass = user.get("custom_password")
+        password_to_use = saved_pass if (saved_pass and str(saved_pass).strip() != "" and str(saved_pass).lower() != "none") else get_setting("pass_rule", "20")
 
         for line in lines:
             uid = extract_numeric_uid(line)
@@ -1045,7 +1048,6 @@ def _process_main_router(message):
             })
             success_list.append(uid); total_earned += rate
             
-            # [LOG CHANNEL NOTIFICATION FIXED]
             try:
                 bot.send_message(
                     LOG_CHANNEL_ID,
@@ -1074,10 +1076,15 @@ def _process_main_router(message):
 
     elif step == 'AWAITING_SINGLE_DATA':
         cat, uid = state.get('category', 'fb_cookie'), state.get('uid')
-        saved_pass = user.get("custom_password", "")
+        saved_pass = user.get("custom_password")
+        
+        has_valid_saved_pass = False
+        if saved_pass and isinstance(saved_pass, str):
+            cleaned_p = saved_pass.strip()
+            if cleaned_p and cleaned_p.lower() != "none":
+                has_valid_saved_pass = True
 
-        if saved_pass:
-            # Fast-track: Password already saved, process immediately
+        if has_valid_saved_pass:
             user_states.pop(chat_id, None)
             now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
             p_hash = generate_payload_hash(text)
@@ -1085,16 +1092,15 @@ def _process_main_router(message):
             rate = float(get_current_task_rate(cat))
             track_id = generate_tracking_id()
 
-            async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, saved_pass, text])
+            async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, cleaned_p, text])
             submissions_col.insert_one({
                 "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
-                "password": saved_pass, "payload": text, "payload_hash": p_hash,
+                "password": cleaned_p, "payload": text, "payload_hash": p_hash,
                 "track_id": track_id, "category": "FB Cookies" if "cookie" in cat else "FB 2FA",
                 "category_key": cat, "rate": rate, "status": "Hold", "date_str": now_str, "date_obj": get_bd_time()
             })
             users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
             
-            # [LOG CHANNEL NOTIFICATION FIXED]
             try:
                 bot.send_message(
                     LOG_CHANNEL_ID,
@@ -1110,7 +1116,6 @@ def _process_main_router(message):
 
             return bot.send_message(chat_id, f"🎉 <b>কাজ জমা সফল হয়েছে!</b>\n📌 Track ID: <code>{track_id}</code>\n💰 আর্ন (এসক্রো হোল্ড): ৳{rate:.2f}", reply_markup=submit_tasks_keyboard())
         else:
-            # Prompt for manual password
             state['payload'] = text
             state['step'] = 'AWAITING_MANUAL_PASSWORD'
             return bot.send_message(chat_id, "🔑 <b>আপনার পাসওয়ার্ড দিন:</b>\n<i>(যেহেতু আপনার কোনো ডিফল্ট পাসওয়ার্ড সেভ করা নেই)</i>", reply_markup=cancel_keyboard())
@@ -1137,7 +1142,6 @@ def _process_main_router(message):
         })
         users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
 
-        # [LOG CHANNEL NOTIFICATION FIXED]
         try:
             bot.send_message(
                 LOG_CHANNEL_ID,
