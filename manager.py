@@ -136,23 +136,16 @@ def parse_iso_datetime(dt_val):
     return get_bd_time()
 
 def log_ai_report(issue_type, description, fix_action):
-    """AI Auto-Healing Logger with Admin Bangla Fix Guide."""
+    """AI Auto-Healing Logger with Admin Clean Aesthetic Layout."""
     now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
     ai_logs_col.insert_one({"timestamp": now_str, "type": issue_type, "description": description, "action": fix_action})
     
     audit_msg = (
-        f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ 🧠 AI অটো-ডিটেকশন ও সিস্টেম রিপোর্ট   ┃\n"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-        f"┃ ⏱️ সময়     : {now_str}\n"
-        f"┃ 📌 সমস্যা   : {issue_type}\n"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-        f"┃ 🔍 আসল সমস্যা বিবরণ:                    ┃\n"
-        f"┃   {description[:120]}                  ┃\n"
-        f"┃                                      ┃\n"
-        f"┃ 🛠️ বট কী করেছে:                       ┃\n"
-        f"┃   {fix_action[:120]}                 ┃\n"
-        f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+        f"🧠 <b>AI AUTO-HEALING & AUDIT REPORT</b>\n\n"
+        f"• <b>Time:</b> {now_str}\n"
+        f"• <b>Issue:</b> {issue_type}\n\n"
+        f"🔍 <b>Description:</b>\n{description[:150]}\n\n"
+        f"🛠️ <b>Action Taken:</b>\n{fix_action[:150]}"
     )
     try: 
         bot.send_message(ADMIN_ID, audit_msg)
@@ -230,16 +223,12 @@ def generate_profile_data(country):
     dob_str = f"{day:02d}/{month:02d}/{year}"
 
     out = (
-        f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃  🎲 CYBER PERSONA // {flag:<15}┃\n"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-        f"┃ 👤 FIRST NAME : <code>{fn}</code>\n"
-        f"┃ 👤 LAST NAME  : <code>{ln}</code>\n"
-        f"┃ 🆔 MAIL/IG ID : <code>{username}</code>\n"
-        f"┃ 🎂 BIRTH DATE : <code>{dob_str}</code>\n"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-        f"┃ 💡 TAP ON TEXT TO COPY INSTANTLY     ┃\n"
-        f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+        f"🎲 <b>CYBER PERSONA // {flag}</b>\n\n"
+        f"• <b>First Name:</b> <code>{fn}</code>\n"
+        f"• <b>Last Name:</b> <code>{ln}</code>\n"
+        f"• <b>Username:</b> <code>{username}</code>\n"
+        f"• <b>Birth Date:</b> <code>{dob_str}</code>\n\n"
+        f"💡 <i>Tap any text above to copy instantly.</i>"
     )
 
     markup = InlineKeyboardMarkup()
@@ -543,13 +532,11 @@ def render_user_manager_page(admin_chat_id, message_id=None, page=1):
     user_list = list(users_col.find().sort("joined_date", -1).skip(skip).limit(users_per_page))
 
     out_msg = (
-        f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃  👥 USER CONTROL CENTER // P{page}/{total_pages:<3} ┃\n"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-        f"┃ 📊 TOTAL MEMBERS : <code>{total_u:<18}</code>┃\n"
-        f"┃ 🟢 ACTIVE USERS  : <code>{active_u:<18}</code>┃\n"
-        f"┃ 🔴 BANNED USERS  : <code>{banned_u:<18}</code>┃\n"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\n"
+        f"👥 <b>USER CONTROL CENTER</b> (Page {page}/{total_pages})\n\n"
+        f"• <b>Total Members:</b> {total_u}\n"
+        f"• <b>Active Users:</b> {active_u}\n"
+        f"• <b>Banned Users:</b> {banned_u}\n\n"
+        f"────────────────────────\n\n"
     )
 
     markup = InlineKeyboardMarkup(row_width=1)
@@ -572,8 +559,6 @@ def render_user_manager_page(admin_chat_id, message_id=None, page=1):
             btn_text = f"🟢 {btn_fname} — 🚫 ব্যান করুন"
 
         markup.add(InlineKeyboardButton(btn_text, callback_data=f"toggle_ban_{u_id}_{page}"))
-
-    out_msg += "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
 
     nav_row = []
     if page > 1:
@@ -651,19 +636,14 @@ def send_welcome(message):
         hold_bal = float(user.get("hold_balance") or 0.0)
 
         welcome_card = (
-            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-            f"┃  ❖ OEB NEXUS // CYBER-AI v6.0       ┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ 👤 OPERATOR : <code>{fname[:18]}</code>\n"
-            f"┃ 🆔 USER ID  : <code>#{chat_id}</code>\n"
-            f"┃                                      ┃\n"
-            f"┃ 💳 WALLET   : <code>৳ {bal:<10.2f} BDT</code>\n"
-            f"┃ ⏳ ESCROW   : <code>৳ {hold_bal:<10.2f} BDT</code>\n"
-            f"┃ 🛡 STATUS   : 🟢 <code>ACTIVE STAFF</code>        ┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ ⚡ AI CITADEL : ONLINE // 256-BIT    ┃\n"
-            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
-            f"  ► <i>কাজের জন্য নিচের টার্মিনাল বাটন ব্যবহার করুন:</i>"
+            f"❖ <b>OEB NEXUS // SECURE CORE v6.0</b>\n\n"
+            f"👤 <b>Operator:</b> {fname[:18]}\n"
+            f"🆔 <b>User ID:</b> <code>#{chat_id}</code>\n\n"
+            f"💳 <b>Wallet:</b> ৳ {bal:.2f} BDT\n"
+            f"⏳ <b>Escrow:</b> ৳ {hold_bal:.2f} BDT\n"
+            f"🛡 <b>Status:</b> 🟢 Active Staff\n\n"
+            f"────────────────────────\n"
+            f"⚡ <i>Select an option from the terminal below:</i>"
         )
 
         bot.send_message(chat_id, welcome_card, reply_markup=main_bottom_keyboard(chat_id))
@@ -773,9 +753,7 @@ def _process_callbacks(call):
         cat_names = {"fb_cookie": "📄 FB Cookies", "fb_2fa": "🔐 FB 2FA", "ig_cookie": "📷 IG Cookies", "ig_2fa": "🔐 IG 2FA"}
         
         out = (
-            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-            f"┃  📊 BATCH REPORT // {selected_date:<15}┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"📊 <b>BATCH REPORT // {selected_date}</b>\n\n"
         )
         
         total_date_hold = 0
@@ -793,13 +771,12 @@ def _process_callbacks(call):
             tot = hold_c + appr_c + rej_c
             
             p_bar = make_progress_bar(appr_c + rej_c, tot, length=8)
-            out += f"┃ <b>{cat_names[c]}</b> : [{p_bar}] (⏳{hold_c} / ✅{appr_c})\n"
+            out += f"• <b>{cat_names[c]}</b>: [{p_bar}] (⏳{hold_c} / ✅{appr_c})\n"
             total_date_hold += hold_c
 
         out += (
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ 📌 TOTAL PENDING HOLD : <code>{total_date_hold:<10}</code>┃\n"
-            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+            f"\n────────────────────────\n"
+            f"📌 <b>Total Pending Hold:</b> {total_date_hold}"
         )
         
         markup = InlineKeyboardMarkup(row_width=2)
@@ -970,18 +947,15 @@ def _process_callbacks(call):
         top = list(submissions_col.aggregate(pipeline))
         
         out = (
-            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-            f"┃  🏆 LEADERBOARD // {title:<17}┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"🏆 <b>LEADERBOARD // {title}</b>\n\n"
         )
         badges = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-        for i, item in enumerate(top): out += f"┃ {badges[i]} <b>{sanitize_html(item['_id'])}</b> — {item['count']} টি\n"
+        for i, item in enumerate(top): out += f"{badges[i]} <b>{sanitize_html(item['_id'])}</b> — {item['count']} টি\n"
         
         user_cnt = submissions_col.count_documents({"chat_id": chat_id})
         out += (
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ 🎯 YOUR TOTAL SUBMISSIONS : <code>{user_cnt:<7}</code> ┃\n"
-            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+            f"\n────────────────────────\n"
+            f"🎯 <b>Your Submissions:</b> {user_cnt}"
         )
         markup = InlineKeyboardMarkup(row_width=3)
         markup.add(InlineKeyboardButton("📅 আজকের সেরা", callback_data="lb_daily"), InlineKeyboardButton("🗓️ এই সপ্তাহের সেরা", callback_data="lb_weekly"), InlineKeyboardButton("🏆 সর্বকালের সেরা", callback_data="lb_alltime"))
@@ -1230,19 +1204,14 @@ def _process_main_router(message):
         hold_bal = float(user.get("hold_balance") or 0.0)
 
         welcome_card = (
-            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-            f"┃  ❖ OEB NEXUS // CYBER-AI v6.0       ┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ 👤 OPERATOR : <code>{fname[:18]}</code>\n"
-            f"┃ 🆔 USER ID  : <code>#{chat_id}</code>\n"
-            f"┃                                      ┃\n"
-            f"┃ 💳 WALLET   : <code>৳ {bal:<10.2f} BDT</code>\n"
-            f"┃ ⏳ ESCROW   : <code>৳ {hold_bal:<10.2f} BDT</code>\n"
-            f"┃ 🛡 STATUS   : 🟢 <code>ACTIVE STAFF</code>        ┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ ⚡ AI CITADEL : ONLINE // 256-BIT    ┃\n"
-            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
-            f"  ► <i>কাজের জন্য নিচের টার্মিনাল বাটন ব্যবহার করুন:</i>"
+            f"❖ <b>OEB NEXUS // SECURE CORE v6.0</b>\n\n"
+            f"👤 <b>Operator:</b> {fname[:18]}\n"
+            f"🆔 <b>User ID:</b> <code>#{chat_id}</code>\n\n"
+            f"💳 <b>Wallet:</b> ৳ {bal:.2f} BDT\n"
+            f"⏳ <b>Escrow:</b> ৳ {hold_bal:.2f} BDT\n"
+            f"🛡 <b>Status:</b> 🟢 Active Staff\n\n"
+            f"────────────────────────\n"
+            f"⚡ <i>Select an option from the terminal below:</i>"
         )
         return bot.send_message(chat_id, welcome_card, reply_markup=main_bottom_keyboard(chat_id))
 
@@ -1261,17 +1230,13 @@ def _process_main_router(message):
         badge_title, trust_pct = calculate_worker_trust_score(chat_id)
         
         prof_card = (
-            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-            f"┃  👤 USER PROFILE // WALLET TERMINAL  ┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ 👤 NAME   : <code>{safe_name[:18]}</code>\n"
-            f"┃ 🏅 BADGE  : <b>{badge_title}</b> ({trust_pct}%)\n"
-            f"┃ 📊 TASKS  : <code>{cnt:<10}</code> TASKS       ┃\n"
-            f"┃ 💰 MAIN   : <code>৳ {bal:<10.2f} BDT</code>    ┃\n"
-            f"┃ ⏳ HOLD   : <code>৳ {hold_bal:<10.2f} BDT</code>    ┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ 🔗 REF LINK : https://t.me/{BOT_USERNAME}?start={chat_id}\n"
-            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+            f"👤 <b>USER PROFILE & WALLET</b>\n\n"
+            f"• <b>Name:</b> {safe_name[:18]}\n"
+            f"• <b>Badge:</b> {badge_title} ({trust_pct}%)\n"
+            f"• <b>Tasks Done:</b> {cnt} Tasks\n\n"
+            f"💳 <b>Main Wallet:</b> ৳ {bal:.2f} BDT\n"
+            f"⏳ <b>Escrow Hold:</b> ৳ {hold_bal:.2f} BDT\n\n"
+            f"🔗 <b>Ref Link:</b> https://t.me/{BOT_USERNAME}?start={chat_id}"
         )
         return bot.send_message(chat_id, prof_card, reply_markup=account_keyboard())
 
@@ -1425,16 +1390,12 @@ def _process_main_router(message):
         st_text = f"⚡ ACTIVE (+৳{surge['bonus']})" if surge.get('active') else "🔴 INACTIVE"
         
         rate_card = (
-            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-            f"┃  ⚙️ RATES & SURGE CONTROL TERMINAL   ┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ 📄 FB COOKIES : <code>৳ {rates['fb_cookie']:<10.2f} BDT</code>   ┃\n"
-            f"┃ 🔐 FB 2FA     : <code>৳ {rates['fb_2fa']:<10.2f} BDT</code>   ┃\n"
-            f"┃ 📷 IG COOKIES : <code>৳ {rates['ig_cookie']:<10.2f} BDT</code>   ┃\n"
-            f"┃ 🔐 IG 2FA     : <code>৳ {rates['ig_2fa']:<10.2f} BDT</code>   ┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ ⚡ SURGE STATUS : {st_text:<18} ┃\n"
-            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+            f"⚙️ <b>RATES & SURGE CONTROL</b>\n\n"
+            f"• <b>FB Cookies:</b> ৳ {rates['fb_cookie']:.2f} BDT\n"
+            f"• <b>FB 2FA:</b> ৳ {rates['fb_2fa']:.2f} BDT\n"
+            f"• <b>IG Cookies:</b> ৳ {rates['ig_cookie']:.2f} BDT\n"
+            f"• <b>IG 2FA:</b> ৳ {rates['ig_2fa']:.2f} BDT\n\n"
+            f"⚡ <b>Surge Status:</b> {st_text}"
         )
         markup = InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("✏️ FB Cookie", callback_data="rate_edit_fb_cookie"), InlineKeyboardButton("✏️ FB 2FA", callback_data="rate_edit_fb_2fa"), InlineKeyboardButton("✏️ IG Cookie", callback_data="rate_edit_ig_cookie"), InlineKeyboardButton("✏️ IG 2FA", callback_data="rate_edit_ig_2fa")).add(InlineKeyboardButton("⚡ Quick Surge (+৳২)", callback_data="surge_3"), InlineKeyboardButton("🛑 Turn OFF Surge", callback_data="surge_off"))
         return bot.send_message(ADMIN_ID, rate_card, reply_markup=markup)
@@ -1489,13 +1450,11 @@ def _process_main_router(message):
         p_rule = str(get_setting("pass_rule", "20")).strip()
 
         task_card = (
-            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-            f"┃  📄 TASK TERMINAL // {text[:15]:<15} ┃\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ 💎 CURRENT RATE : <code>৳ {rate:<10.2f} BDT</code>   ┃\n"
-            f"┃ 🔑 RULE CODE   : <code>{p_rule:<15}</code>┃\n"
-            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
-            f"  ► <b>UID বা প্রোফাইল লিঙ্ক সেন্ড করুন:</b>"
+            f"📄 <b>TASK TERMINAL // {text[:15]}</b>\n\n"
+            f"💎 <b>Current Rate:</b> ৳ {rate:.2f} BDT\n"
+            f"🔑 <b>Rule Code:</b> <code>{p_rule}</code>\n\n"
+            f"────────────────────────\n"
+            f"► <b>Send your UID or profile link:</b>"
         )
         user_states[chat_id] = {'step': 'AWAITING_UID', 'category': cat}
         return bot.send_message(chat_id, task_card, reply_markup=cancel_keyboard())
