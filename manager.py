@@ -7,6 +7,8 @@ import random
 import datetime
 from datetime import timedelta, timezone
 import threading
+import concurrent.futures
+import collections
 import time
 import hashlib
 import requests
@@ -23,6 +25,7 @@ from telebot.apihelper import ApiTelegramException
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
 import google.generativeai as genai
 
 # ================= 1. Configuration & Credentials =================
@@ -58,8 +61,8 @@ except Exception:
 # MongoDB Connection Pool
 mongo_client = MongoClient(
     MONGO_URL,
-    maxPoolSize=200,
-    minPoolSize=20,
+    maxPoolSize=300,
+    minPoolSize=50,
     maxIdleTimeMS=45000,
     connectTimeoutMS=10000
 )
@@ -72,6 +75,17 @@ tickets_col = db['support_tickets']
 withdrawals_col = db['withdrawals']
 blacklisted_payloads_col = db['blacklisted_payloads']
 ai_logs_col = db['ai_logs']
+sheet_overflow_col = db['sheet_overflow_queue']
+
+# FIXED 2: Strict Unique Indexing on UID to Prevent Race Condition Duplicates
+try:
+    submissions_col.create_index("track_id", unique=True, background=True)
+    submissions_col.create_index("uid", unique=True, background=True)
+    submissions_col.create_index("chat_id", background=True)
+    submissions_col.create_index("status", background=True)
+    submissions_col.create_index("date_key", background=True)
+except Exception:
+    pass
 
 REQUIRED_CHANNELS = [
     {"name": "Earning Bazar", "username": "@earningbazar0", "url": "https://t.me/earningbazar0"},
@@ -79,10 +93,93 @@ REQUIRED_CHANNELS = [
     {"name": "Earning Shop", "username": "@onlineearningshop01", "url": "https://t.me/onlineearningshop01"}
 ]
 
-user_states = {}
-
 # Timezone definition for Bangladesh (UTC+6)
 BD_TIMEZONE = timezone(timedelta(hours=6))
+
+# Non-blocking Bounded Executor to Prevent Webhook Freeze
+class NonBlockingBoundedExecutor:
+    def __init__(self, max_workers, max_queue):
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self.semaphore = threading.Semaphore(max_workers + max_queue)
+        
+    def submit(self, fn, *args, **kwargs):
+        acquired = self.semaphore.acquire(blocking=False)
+        if acquired:
+            try:
+                future = self.executor.submit(fn, *args, **kwargs)
+                future.add_done_callback(lambda x: self.semaphore.release())
+                return future
+            except Exception:
+                self.semaphore.release()
+                raise
+        else:
+            def fallback():
+                try:
+                    fn(*args, **kwargs)
+                except Exception:
+                    pass
+            threading.Thread(target=fallback, daemon=True).start()
+
+background_executor = NonBlockingBoundedExecutor(max_workers=20, max_queue=5000)
+
+# FIXED 1: Fully Thread-Safe LRU Cache in MongoDict
+class MongoDict:
+    def __init__(self, collection, max_cache_size=10000):
+        self.col = collection
+        self.cache = collections.OrderedDict()
+        self.max_cache_size = max_cache_size
+        self.lock = threading.Lock()
+        
+    def get(self, key, default=None):
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                return self.cache[key]
+        
+        doc = self.col.find_one({"_id": key})
+        if doc:
+            val = doc.get("state", default)
+            with self.lock:
+                self._add_to_cache(key, val)
+            return val
+        return default
+
+    def __setitem__(self, key, value):
+        with self.lock:
+            self._add_to_cache(key, value)
+        background_executor.submit(self._async_save, key, value)
+
+    def _add_to_cache(self, key, value):
+        self.cache[key] = value
+        self.cache.move_to_end(key)
+        if len(self.cache) > self.max_cache_size:
+            self.cache.popitem(last=False)
+
+    def _async_save(self, key, value):
+        try:
+            self.col.update_one({"_id": key}, {"$set": {"state": value}}, upsert=True)
+        except Exception:
+            pass
+
+    def pop(self, key, default=None):
+        val = default
+        with self.lock:
+            if key in self.cache:
+                val = self.cache.pop(key)
+            else:
+                doc = self.col.find_one_and_delete({"_id": key})
+                if doc:
+                    val = doc.get("state", default)
+        background_executor.submit(self._async_delete, key)
+        return val
+
+    def _async_delete(self, key):
+        try:
+            self.col.delete_one({"_id": key})
+        except Exception:
+            pass
+
+user_states = MongoDict(db['user_states'])
 
 # Dynamic Category Mapping Dictionary
 CAT_MAP = {
@@ -92,7 +189,7 @@ CAT_MAP = {
     "ig_2fa": "IG 2FA"
 }
 
-# Dynamic Dataset for Unlimited Profile Combinations
+# Dynamic Dataset for Profile Generation
 BD_FIRST_NAMES = [
     "Sakib", "Tanvir", "Rahim", "Rakib", "Nayeem", "Ariful", "Mehedi", "Mahfuz", 
     "Farhan", "Ashfaq", "Sumon", "Imran", "Hasib", "Shahadat", "Rayhan", "Tasnim", 
@@ -116,14 +213,12 @@ USA_LAST_NAMES = [
     "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson", "White", "Harris"
 ]
 
-# ================= 2. Sanitization, Helper & AI Functions =================
+# ================= 2. Helper Functions =================
 
 def get_bd_time():
-    """Returns current Bangladesh Time (UTC+6) with proper timezone awareness."""
     return datetime.datetime.now(BD_TIMEZONE)
 
 def parse_iso_datetime(dt_val):
-    """Safely parses datetime and ensures timezone awareness (BD Time)."""
     if not dt_val:
         return get_bd_time()
     if isinstance(dt_val, datetime.datetime):
@@ -141,7 +236,6 @@ def parse_iso_datetime(dt_val):
     return get_bd_time()
 
 def safe_delete_msg(chat_id, message_id):
-    """Safely deletes a message without crashing if already deleted."""
     try:
         bot.delete_message(chat_id, message_id)
     except Exception:
@@ -155,7 +249,6 @@ def update_setting(key, value):
     settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
 
 def get_active_surge_bonus():
-    """Calculates active surge bonus considering exact expiration time."""
     surge_info = get_setting("surge_pricing", {"active": False, "bonus": 0.0, "expires_at": None})
     if surge_info.get("active"):
         exp = parse_iso_datetime(surge_info.get("expires_at"))
@@ -164,7 +257,6 @@ def get_active_surge_bonus():
     return 0.0
 
 def log_ai_report(issue_type, description, fix_action):
-    """AI Auto-Healing Logger with Admin Clean Aesthetic Layout."""
     now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
     ai_logs_col.insert_one({"timestamp": now_str, "type": issue_type, "description": description, "action": fix_action})
     
@@ -181,7 +273,6 @@ def log_ai_report(issue_type, description, fix_action):
         pass
 
 def generate_strict_ai_warning(issue, cause, solution, prevention):
-    """Generates strict 4-step AI error warning layout."""
     return (
         f"⚠️ <b>OEB NEXUS AI SYSTEM WARNING</b>\n\n"
         f"🔍 <b>১. সমস্যা:</b> {issue}\n"
@@ -191,13 +282,11 @@ def generate_strict_ai_warning(issue, cause, solution, prevention):
     )
 
 def validate_strict_password(password, rule):
-    """Strictly checks if the password ends with the specified rule code."""
     if not rule or rule.lower() == "none" or rule.strip() == "":
         return True
     return str(password).strip().endswith(rule.strip())
 
 def ask_ai_chatbot(user_message):
-    """AI Customer Support Chatbot Response Generator."""
     if not ai_model:
         return "আসসালামু আলাইকুম! OEB NEXUS বটে আপনাকে স্বাগতম। নিচের মেনু থেকে আপনার প্রয়োজনীয় সেবা বেছে নিন।"
     try:
@@ -212,7 +301,6 @@ def ask_ai_chatbot(user_message):
         return "আপনার বার্তাটি আমরা পেয়েছি। দয়া করে প্রধান মেনু থেকে আপনার কাঙ্ক্ষিত অপশনটি সিলেক্ট করুন।"
 
 def ai_analyze_ticket_sentiment(ticket_text):
-    """AI Sentiment & Priority Analysis for Support Tickets."""
     if not ai_model:
         return "Normal", "সাধারণ সাপোর্ট বার্তা"
     try:
@@ -228,7 +316,6 @@ def ai_analyze_ticket_sentiment(ticket_text):
         return "Normal", "সাপোর্ট রিকোয়েস্ট"
 
 def calculate_worker_trust_score(chat_id):
-    """Calculates worker trust score & returns performance badge."""
     total = submissions_col.count_documents({"chat_id": chat_id})
     appr = submissions_col.count_documents({"chat_id": chat_id, "status": "Approved"})
     if total == 0:
@@ -246,7 +333,6 @@ def sanitize_html(text):
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def generate_profile_data(country):
-    """Generates dynamic 1-click copiable cyber persona profile data."""
     if country == "bd":
         fn = random.choice(BD_FIRST_NAMES)
         ln = random.choice(BD_LAST_NAMES)
@@ -279,7 +365,6 @@ def generate_profile_data(country):
     return out, markup
 
 def send_private_backup_message(content, doc_buf=None, doc_name=None):
-    """Sends async backup log/file to the private BACKUP_CHANNEL_ID with 4096 length safety."""
     def task():
         try:
             safe_content = content
@@ -293,10 +378,9 @@ def send_private_backup_message(content, doc_buf=None, doc_name=None):
                 bot.send_message(BACKUP_CHANNEL_ID, safe_content)
         except Exception as e:
             log_ai_report("Backup Channel Error", str(e), "Check if Bot is Admin in private backup channel.")
-    threading.Thread(target=task, daemon=True).start()
+    background_executor.submit(task)
 
 def broadcast_password_rule_notice(new_rule):
-    """Automatically broadcasts password rule updates to all users in background."""
     def task():
         all_users = list(users_col.find({"banned": False}))
         notice_text = (
@@ -311,10 +395,15 @@ def broadcast_password_rule_notice(new_rule):
         for u in all_users:
             try:
                 bot.send_message(u["_id"], notice_text)
-                time.sleep(0.04)
+                time.sleep(0.05)
+            except ApiTelegramException as e:
+                if e.error_code == 429:
+                    time.sleep(e.result_json.get('parameters', {}).get('retry_after', 3))
+                    try: bot.send_message(u["_id"], notice_text)
+                    except: pass
             except Exception:
                 pass
-    threading.Thread(target=task, daemon=True).start()
+    background_executor.submit(task)
 
 def make_progress_bar(processed, total, length=10):
     if not total or total == 0: return "░" * length
@@ -415,49 +504,112 @@ def get_current_task_rate(cat_key):
     base_rate += get_active_surge_bonus()
     return base_rate
 
-# OPTIMIZED GOOGLE SHEETS BATCH APPEND WITH DEBUG PRINTGING
-def async_save_batch_to_sheet(tab_name, rows_list):
-    """Appends multiple rows in a single API call and prints errors if any occur."""
-    def task():
+# --- AUTO TOKEN REFRESH & GOOGLE API RE-AUTH ENGINE ---
+global_gspread_client = None
+gspread_lock = threading.Lock()
+sheet_write_queue = {}
+sheet_queue_lock = threading.Lock()
+
+def get_gspread_client(force_refresh=False):
+    global global_gspread_client
+    with gspread_lock:
+        if global_gspread_client is None or force_refresh:
+            try:
+                scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+                creds_path = "/etc/secrets/credentials.json"
+                if not os.path.exists(creds_path):
+                    creds_path = CREDENTIALS_FILE
+                if not os.path.exists(creds_path):
+                    creds_path = "credentials.json"
+                
+                with open(creds_path, 'r', encoding='utf-8') as f:
+                    creds_dict = json.load(f)
+                
+                creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+                global_gspread_client = gspread.authorize(creds)
+            except Exception as e:
+                print(f"[AUTH ERROR] Failed to initialize gspread client: {e}")
+                raise
+        return global_gspread_client
+
+# ZERO DATA LOSS DAEMON WITH MONGODB PERSISTENT OVERFLOW QUEUE
+def background_sheet_writer_daemon():
+    MAX_RAM_QUEUE_SIZE = 3000
+    while True:
+        time.sleep(15)
+        with sheet_queue_lock:
+            if not sheet_write_queue:
+                continue
+            snapshot = sheet_write_queue.copy()
+            sheet_write_queue.clear()
+        
         try:
-            if not os.path.exists(CREDENTIALS_FILE):
-                print(f"[GOOGLE SHEET ERROR]: {CREDENTIALS_FILE} not found on server root!")
-                return
-            if not rows_list: 
-                return
-            
-            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-            gc = gspread.authorize(creds)
+            gc = get_gspread_client(force_refresh=False)
             sheet = gc.open_by_key(SPREADSHEET_ID)
-            try:
-                worksheet = sheet.worksheet(tab_name)
-            except gspread.exceptions.WorksheetNotFound:
-                cols_count = max(len(r) for r in rows_list) + 2
-                worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=cols_count)
-            worksheet.append_rows(rows_list)
-            print(f"[GOOGLE SHEET SUCCESS]: Appended {len(rows_list)} rows to tab '{tab_name}'.")
+            
+            overflow_docs = list(sheet_overflow_col.find().limit(500))
+            if overflow_docs:
+                for o_doc in overflow_docs:
+                    o_tab = o_doc.get("tab_name")
+                    o_rows = o_doc.get("rows", [])
+                    try:
+                        ws = sheet.worksheet(o_tab)
+                    except gspread.exceptions.WorksheetNotFound:
+                        ws = sheet.add_worksheet(title=o_tab, rows=1000, cols=10)
+                    ws.append_rows(o_rows)
+                    sheet_overflow_col.delete_one({"_id": o_doc["_id"]})
+
+            for tab_name, rows in snapshot.items():
+                if not rows: continue
+                try:
+                    worksheet = sheet.worksheet(tab_name)
+                except gspread.exceptions.WorksheetNotFound:
+                    cols_count = max(len(r) for r in rows) + 2
+                    worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=cols_count)
+                worksheet.append_rows(rows)
+
         except Exception as e:
-            err_msg = f"[GOOGLE SHEET EXCEPTION]: {str(e)}"
-            print(err_msg)
-            log_ai_report("Google Sheet Batch Error", str(e), "Check credentials.json and Share permission on Sheet.")
-            try:
-                bot.send_message(ADMIN_ID, f"⚠️ <b>Google Sheet Error Alert:</b>\n<code>{sanitize_html(str(e))}</code>")
-            except Exception:
-                pass
-    threading.Thread(target=task, daemon=True).start()
+            err_str = str(e)
+            log_ai_report("Google Sheet Daemon Exception", err_str, "Retrying with Auto Token Refresh & Mongo Failover...")
+            
+            if "401" in err_str or "invalid_grant" in err_str.lower() or "token" in err_str.lower():
+                try: get_gspread_client(force_refresh=True)
+                except: pass
+
+            with sheet_queue_lock:
+                for tab_name, rows in snapshot.items():
+                    if tab_name not in sheet_write_queue:
+                        sheet_write_queue[tab_name] = []
+                    
+                    sheet_write_queue[tab_name] = rows + sheet_write_queue[tab_name]
+                    
+                    if len(sheet_write_queue[tab_name]) > MAX_RAM_QUEUE_SIZE:
+                        overflow_rows = sheet_write_queue[tab_name][MAX_RAM_QUEUE_SIZE:]
+                        sheet_write_queue[tab_name] = sheet_write_queue[tab_name][:MAX_RAM_QUEUE_SIZE]
+                        try:
+                            sheet_overflow_col.insert_one({
+                                "tab_name": tab_name,
+                                "rows": overflow_rows,
+                                "created_at": get_bd_time()
+                            })
+                        except Exception: pass
+
+threading.Thread(target=background_sheet_writer_daemon, daemon=True).start()
+
+def async_save_batch_to_sheet(tab_name, rows_list):
+    if not rows_list: return
+    with sheet_queue_lock:
+        if tab_name not in sheet_write_queue:
+            sheet_write_queue[tab_name] = []
+        sheet_write_queue[tab_name].extend(rows_list)
 
 def async_save_to_sheet(tab_name, row_data):
     async_save_batch_to_sheet(tab_name, [row_data])
 
 def async_create_sheet_tab(tab_name, fields):
-    """Automatically creates a new worksheet tab in Google Sheets with headers."""
     def task():
         try:
-            if not os.path.exists(CREDENTIALS_FILE): return
-            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-            gc = gspread.authorize(creds)
+            gc = get_gspread_client()
             sheet = gc.open_by_key(SPREADSHEET_ID)
             try:
                 sheet.worksheet(tab_name)
@@ -466,11 +618,10 @@ def async_create_sheet_tab(tab_name, fields):
                 ws = sheet.add_worksheet(title=tab_name, rows=1000, cols=len(headers)+2)
                 ws.append_row(headers)
         except Exception as e:
-            log_ai_report("Create Sheet Tab Error", str(e), "Handled gracefully in background.")
-    threading.Thread(target=task, daemon=True).start()
+            pass
+    background_executor.submit(task)
 
 def get_active_hold_dates():
-    """Gets sorted list of unique dates (YYYY-MM-DD) that have pending 'Hold' tasks."""
     pipeline = [
         {"$match": {"status": "Hold"}},
         {"$project": {
@@ -496,7 +647,6 @@ def get_active_hold_dates():
     return dates
 
 def get_all_recorded_dates():
-    """Gets sorted list of all dates in DB for Archive Vault."""
     pipeline = [
         {"$project": {
             "effective_date": {
@@ -521,7 +671,6 @@ def get_all_recorded_dates():
     return dates
 
 def build_date_query(selected_date, base_status=None):
-    """Builds a MongoDB query matching either date_key or legacy date_str."""
     q = {}
     if base_status: q["status"] = base_status
     if selected_date != "ALL":
@@ -549,7 +698,7 @@ def generate_worker_badge_image_py(worker_id, username, total_submissions):
     buf.seek(0)
     return buf
 
-# ================= 4. UI Keyboards (2-2-1 CYBER GRID LAYOUT) =================
+# ================= 4. UI Keyboards =================
 
 def main_bottom_keyboard(chat_id):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -602,7 +751,6 @@ def bonus_support_keyboard():
     markup.add(KeyboardButton("💬 এডমিন সাপোর্ট টিকিট"), KeyboardButton("🏠 মেইন মেনু"))
     return markup
 
-# --- CATEGORY BASED SUB-MENU ADMIN KEYBOARDS ---
 def admin_bottom_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("📊 টাস্ক ও রিপোর্ট ম্যানেজমেন্ট"), KeyboardButton("💳 ফাইন্যান্স ও উইথড্র"))
@@ -644,7 +792,7 @@ def cancel_keyboard():
     markup.add(KeyboardButton("❌ বাতিল করুন"))
     return markup
 
-# ================= 5. Dynamic User Control Center Render Engine =================
+# ================= 5. Dynamic User Control Center =================
 
 def render_user_manager_page(admin_chat_id, message_id=None, page=1):
     users_per_page = 5
@@ -695,7 +843,7 @@ def render_user_manager_page(admin_chat_id, message_id=None, page=1):
     else:
         bot.send_message(admin_chat_id, out_msg, reply_markup=markup)
 
-# ================= 6. Background Daemon & Report Scheduler =================
+# ================= 6. Background Daemon =================
 
 def escrow_daemon():
     while True:
@@ -721,7 +869,7 @@ def telegram_webhook():
         log_ai_report("Webhook Exception", str(e), "Handled via webhook safety wrapper.")
     abort(403)
 
-# ================= 8. Core Command & Router Handlers =================
+# ================= 8. Core Handlers =================
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -761,7 +909,6 @@ def send_welcome(message):
         bot.send_message(chat_id, welcome_card, reply_markup=main_bottom_keyboard(chat_id))
     except Exception as e: log_ai_report("Start Handler Error", str(e), "Caught gracefully.")
 
-# --- CALLBACK ROUTER ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_all_callbacks(call):
     try: _process_callbacks(call)
@@ -798,7 +945,6 @@ def _process_callbacks(call):
         prompt = f"📱 <b>আপনার {method_name} নাম্বার/আইডিটি লিখুন:</b>" if method == "bkash" else f"🔶 <b>আপনার {method_name} টি টাইপ করুন:</b>"
         bot.edit_message_text(prompt, chat_id, call.message.message_id)
 
-    # --- ADMIN WITHDRAWAL APPROVAL/REJECTION CALLBACKS ---
     elif code.startswith("w_appr_") and chat_id == ADMIN_ID:
         try: bot.answer_callback_query(call.id)
         except Exception: pass
@@ -1213,10 +1359,13 @@ def _process_document(message):
             for worker_id, text_msg in notification_list:
                 try:
                     bot.send_message(worker_id, text_msg)
-                    time.sleep(0.04)
+                    time.sleep(0.05)
+                except ApiTelegramException as e:
+                    if e.error_code == 429:
+                        time.sleep(e.result_json.get('parameters', {}).get('retry_after', 3))
                 except Exception: pass
 
-        threading.Thread(target=send_async_notifications, args=(notifications,), daemon=True).start()
+        background_executor.submit(lambda: send_async_notifications(notifications))
 
         return bot.send_message(
             ADMIN_ID, 
@@ -1276,17 +1425,18 @@ def _process_document(message):
                 rate = float(get_current_task_rate(cat_key))
                 track_id = generate_tracking_id()
 
-                sheet_rows.append([now_str, track_id, str(chat_id), uid, password, payload])
+                try:
+                    submissions_col.insert_one({
+                        "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
+                        "password": password, "payload": payload, "payload_hash": p_hash, "track_id": track_id,
+                        "category": cat_display, "category_key": cat_key,
+                        "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                    })
+                    sheet_rows.append([now_str, track_id, str(chat_id), uid, password, payload])
+                    success_count += 1; total_earned += rate
+                except DuplicateKeyError:
+                    continue
 
-                submissions_col.insert_one({
-                    "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
-                    "password": password, "payload": payload, "payload_hash": p_hash, "track_id": track_id,
-                    "category": cat_display, "category_key": cat_key,
-                    "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
-                })
-                success_count += 1; total_earned += rate
-
-        # Batch append to Google Sheets
         if sheet_rows:
             async_save_batch_to_sheet("Cookies_Data", sheet_rows)
 
@@ -1337,7 +1487,9 @@ def _process_main_router(message):
         "📊 টাস্ক ও রিপোর্ট ম্যানেজমেন্ট", "💳 ফাইন্যান্স ও উইথড্র", "⚙️ সেটিংস ও কনফিগারেশন", "📢 ইউজার ও সিস্টেম কন্ট্রোল", "🔙 এডমিন প্যানেল"
     ]
 
-    current_state = user_states.get(chat_id, {}).copy()
+    current_state = user_states.get(chat_id) or {}
+    if not isinstance(current_state, dict):
+        current_state = {}
 
     if text in nav_buttons or text.startswith("🛠 মেইনটেনেন্স:") or text.startswith("⏳ পেন্ডিং উইথড্রয়াল চেক"):
         user_states.pop(chat_id, None)
@@ -1407,7 +1559,6 @@ def _process_main_router(message):
     elif text in ["👑 এডমিন কন্ট্রোল সেন্টার", "👑 এডমিন প্যানেল", "🔙 এডমিন প্যানেল"] and chat_id == ADMIN_ID:
         return bot.send_message(chat_id, "👑 <b>ADMIN CONTROL CENTER</b>\nপ্রধান ক্যাটাগরি বেছে নিন:", reply_markup=admin_bottom_keyboard())
 
-    # --- CATEGORY SUB-MENU ROUTERS FOR ADMIN ---
     elif text == "📊 টাস্ক ও রিপোর্ট ম্যানেজমেন্ট" and chat_id == ADMIN_ID:
         return bot.send_message(chat_id, "📊 <b>টাস্ক ও রিপোর্ট ম্যানেজমেন্ট প্যানেল:</b>", reply_markup=admin_sub_task_keyboard())
 
@@ -1420,7 +1571,6 @@ def _process_main_router(message):
     elif text == "📢 ইউজার ও সিস্টেম কন্ট্রোল" and chat_id == ADMIN_ID:
         return bot.send_message(chat_id, "📢 <b>ইউজার ও সিস্টেম কন্ট্রোল প্যানেল:</b>", reply_markup=admin_sub_system_keyboard())
 
-    # --- ADMIN WITHDRAWAL PENDING LIST VIEWER ---
     elif text.startswith("⏳ পেন্ডিং উইথড্রয়াল চেক") and chat_id == ADMIN_ID:
         pending_ws = list(withdrawals_col.find({"status": "Pending"}).limit(5))
         if not pending_ws:
@@ -1678,7 +1828,6 @@ def _process_main_router(message):
         user_states[chat_id] = {'step': 'AWAITING_UID', 'category': cat}
         return bot.send_message(chat_id, task_card, reply_markup=cancel_keyboard())
 
-    # --- Exact Match with Expiration-Aware Surge Bonus calculation for Custom Category Buttons ---
     custom_cats = get_setting("custom_categories", {})
     bonus_amt = get_active_surge_bonus()
 
@@ -1720,12 +1869,11 @@ def _process_main_router(message):
 
     step = state.get('step')
 
-    # --- MULTI-STEP WITHDRAWAL PROCESSORS ---
     if step == 'AWAITING_WITHDRAW_ACCOUNT':
         method_name = state.get('method', 'bKash')
         account_no = text.strip()
         
-        safe_delete_msg(chat_id, message.message_id) # Clean UI
+        safe_delete_msg(chat_id, message.message_id)
 
         user_states[chat_id] = {
             'step': 'AWAITING_WITHDRAW_AMOUNT',
@@ -1747,7 +1895,7 @@ def _process_main_router(message):
         method_name = state.get('method', 'bKash')
         account_no = state.get('account', '')
         
-        safe_delete_msg(chat_id, message.message_id) # Clean UI
+        safe_delete_msg(chat_id, message.message_id)
 
         try:
             req_amount = float(text.strip())
@@ -1764,14 +1912,12 @@ def _process_main_router(message):
 
         user_states.pop(chat_id, None)
 
-        # Deduct balance from user
         new_balance = bal - req_amount
         update_user_field(chat_id, "balance", new_balance)
 
         now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
         withdraw_id = generate_withdraw_id()
 
-        # Save to withdrawals collection for admin panel control
         withdrawals_col.insert_one({
             "withdraw_id": withdraw_id,
             "chat_id": chat_id,
@@ -1784,7 +1930,6 @@ def _process_main_router(message):
             "date_obj": get_bd_time()
         })
 
-        # User Confirmation
         return bot.send_message(
             chat_id, 
             f"🎉 <b>উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে!</b>\n"
@@ -1797,7 +1942,6 @@ def _process_main_router(message):
             reply_markup=account_keyboard()
         )
 
-    # --- ADMIN: Dynamic Category Creation Steps ---
     elif step == 'AWAITING_NEW_CAT_NAME' and chat_id == ADMIN_ID:
         cat_name = text.strip()
         state['new_cat_name'] = cat_name
@@ -1842,9 +1986,8 @@ def _process_main_router(message):
         except Exception:
             return bot.send_message(ADMIN_ID, "❌ ভুল সংখ্যা!", reply_markup=admin_sub_settings_keyboard())
 
-    # --- USER: Custom Category Submissions ---
     elif step == 'AWAITING_CUSTOM_FIELD':
-        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id)
 
         cat_key = state.get('cat_key')
         fields = state.get('fields', [])
@@ -1873,14 +2016,12 @@ def _process_main_router(message):
 
             first_val = collected.get(fields[0], "N/A")
 
-            # Case-insensitive & Multilingual Password detection
             pass_val = "N/A"
             for k, v in collected.items():
                 if k.strip().lower() in ["password", "pass", "পাসওয়ার্ড", "পাসওয়ার্ড"]:
                     pass_val = v
                     break
 
-            # STRICT PASSWORD RULE VALIDATION FOR CUSTOM CATEGORIES
             p_rule = str(get_setting("pass_rule", "@21")).strip()
             if pass_val != "N/A" and p_rule and p_rule.lower() != "none":
                 if not validate_strict_password(pass_val, p_rule):
@@ -1898,17 +2039,19 @@ def _process_main_router(message):
             track_id = generate_tracking_id()
 
             row_data = [now_str, track_id, str(chat_id)] + [collected.get(f, "") for f in fields]
-            async_save_to_sheet(cat_name, row_data)
-
-            submissions_col.insert_one({
-                "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name),
-                "uid": first_val, "password": pass_val,
-                "payload": json.dumps(collected, ensure_ascii=False),
-                "track_id": track_id, "category": cat_name, "category_key": cat_key,
-                "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
-            })
-
-            users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
+            
+            try:
+                submissions_col.insert_one({
+                    "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name),
+                    "uid": first_val, "password": pass_val,
+                    "payload": json.dumps(collected, ensure_ascii=False),
+                    "track_id": track_id, "category": cat_name, "category_key": cat_key,
+                    "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                })
+                async_save_to_sheet(cat_name, row_data)
+                users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
+            except DuplicateKeyError:
+                return bot.send_message(chat_id, "❌ এই একাউন্টটি ইতিপূর্বেই জমা দেওয়া হয়েছে!", reply_markup=submit_tasks_keyboard())
 
             try:
                 bot.send_message(LOG_CHANNEL_ID, f"📥 <b>NEW SUBMISSION ({cat_name})</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 Ref: <code>{first_val}</code> | 💰 Rate: ৳{rate:.2f}")
@@ -1920,8 +2063,6 @@ def _process_main_router(message):
         user_states.pop(chat_id, None)
         new_rule = text.strip()
         update_setting("pass_rule", new_rule)
-        
-        # Trigger background auto broadcast to all users
         broadcast_password_rule_notice(new_rule)
         return bot.send_message(ADMIN_ID, f"✅ <b>আজকের পাসওয়ার্ড সিকিউরিটি কোড সফলভাবে সেট করা হয়েছে:</b> <code>{sanitize_html(new_rule)}</code>\n\n📢 <i>সব মেম্বারদের ইনবক্সে ব্রডকাস্ট নোটিশ পাঠানো শুরু হয়েছে!</i>", reply_markup=admin_sub_settings_keyboard())
 
@@ -1954,6 +2095,10 @@ def _process_main_router(message):
                 elif message.animation: bot.send_animation(u["_id"], message.animation.file_id, caption=text)
                 else: bot.send_message(u["_id"], text)
                 success += 1
+                time.sleep(0.05)
+            except ApiTelegramException as e:
+                if e.error_code == 429:
+                    time.sleep(e.result_json.get('parameters', {}).get('retry_after', 3))
             except Exception: pass
         return bot.send_message(ADMIN_ID, f"✅ <b>ব্রডকাস্ট সফলভাবে {success} জনকে পাঠানো হয়েছে!</b>")
 
@@ -2018,7 +2163,6 @@ def _process_main_router(message):
         for l in live_list: out += f"<code>{sanitize_html(l)}</code>\n"
         return bot.send_message(chat_id, out, reply_markup=helper_tools_keyboard())
 
-    # --- BULK SUBMISSION FULL REHAUL ---
     elif step == 'AWAITING_BULK_TEXT':
         saved_pass = user.get("custom_password")
         p_rule = str(get_setting("pass_rule", "@21")).strip()
@@ -2034,7 +2178,7 @@ def _process_main_router(message):
             )
             return bot.send_message(chat_id, ai_warn, reply_markup=submit_tasks_keyboard())
 
-        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id) 
         user_states.pop(chat_id, None)
 
         lines = [l.strip() for l in text.split("\n") if l.strip()]
@@ -2067,26 +2211,27 @@ def _process_main_router(message):
             rate = float(get_current_task_rate(cat_key))
             track_id = generate_tracking_id()
 
-            sheet_rows.append([now_str, track_id, str(chat_id), uid, password_to_use, line])
-            valid_raw_payloads.append(line)
+            try:
+                submissions_col.insert_one({
+                    "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
+                    "password": password_to_use, "payload": line, "payload_hash": p_hash,
+                    "track_id": track_id, "category": cat_display,
+                    "category_key": cat_key, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                })
+                sheet_rows.append([now_str, track_id, str(chat_id), uid, password_to_use, line])
+                valid_raw_payloads.append(line)
+                success_list.append(uid); total_earned += rate
+            except DuplicateKeyError:
+                rejected_list.append((uid, "ডুপ্লিকেট একাউন্ট (রেস কন্ডিশন আটকানো হয়েছে)"))
+                continue
 
-            submissions_col.insert_one({
-                "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
-                "password": password_to_use, "payload": line, "payload_hash": p_hash,
-                "track_id": track_id, "category": cat_display,
-                "category_key": cat_key, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
-            })
-            success_list.append(uid); total_earned += rate
-            
             try:
                 bot.send_message(LOG_CHANNEL_ID, f"📥 <b>NEW SUBMISSION (Bulk Text)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}")
             except Exception: pass
 
-        # Batch append to Google Sheets
         if sheet_rows:
             async_save_batch_to_sheet("Cookies_Data", sheet_rows)
 
-        # Send ONLY 100% Accepted Data to Private Backup Channel
         if len(success_list) > 0:
             valid_payload_text = "\n".join(valid_raw_payloads)
             safe_raw_text = sanitize_html(valid_payload_text[:2500])
@@ -2099,7 +2244,6 @@ def _process_main_router(message):
 
         users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
 
-        # Detailed Output with Rejection Reasons
         out = f"🎉 <b>বাল্ক সাবমিশন রিপোর্ট!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         out += f"✅ <b>গৃহীত একাউন্ট:</b> {len(success_list)} টি\n"
         out += f"❌ <b>বাতিলকৃত একাউন্ট:</b> {len(rejected_list)} টি\n"
@@ -2119,7 +2263,7 @@ def _process_main_router(message):
         return bot.send_message(chat_id, out, reply_markup=submit_tasks_keyboard())
 
     elif step == 'AWAITING_UID':
-        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id) 
 
         uid = extract_numeric_uid(text)
         if not uid or is_duplicate_uid(uid): return bot.send_message(chat_id, "❌ ভুল বা ডুপ্লিকেট UID!")
@@ -2129,7 +2273,7 @@ def _process_main_router(message):
         return bot.send_message(chat_id, f"✅ Verified UID: <code>{uid}</code>\n\n{prompt}", reply_markup=cancel_keyboard())
 
     elif step == 'AWAITING_SINGLE_DATA':
-        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id) 
 
         cat, uid = state.get('category', 'fb_cookie'), state.get('uid')
         saved_pass = user.get("custom_password")
@@ -2152,15 +2296,18 @@ def _process_main_router(message):
             track_id = generate_tracking_id()
             cat_display = CAT_MAP.get(cat, "FB Cookies")
 
-            async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, cleaned_p, text])
-            submissions_col.insert_one({
-                "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
-                "password": cleaned_p, "payload": text, "payload_hash": p_hash,
-                "track_id": track_id, "category": cat_display,
-                "category_key": cat, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
-            })
-            users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
-            
+            try:
+                submissions_col.insert_one({
+                    "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
+                    "password": cleaned_p, "payload": text, "payload_hash": p_hash,
+                    "track_id": track_id, "category": cat_display,
+                    "category_key": cat, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                })
+                async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, cleaned_p, text])
+                users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
+            except DuplicateKeyError:
+                return bot.send_message(chat_id, "❌ এই UID টি ইতিপূর্বেই জমা নেওয়া হয়েছে!", reply_markup=submit_tasks_keyboard())
+
             safe_payload = sanitize_html(text[:2500])
             send_private_backup_message(
                 f"📌 <b>[PRIVATE BACKUP - Single Task]</b>\nTrack: <code>{track_id}</code> | Worker: <code>{chat_id}</code> | UID: <code>{uid}</code>\nPass: <code>{sanitize_html(cleaned_p)}</code>\nPayload:\n<code>{safe_payload}</code>"
@@ -2190,7 +2337,7 @@ def _process_main_router(message):
             return bot.send_message(chat_id, prompt_msg, reply_markup=cancel_keyboard())
 
     elif step == 'AWAITING_MANUAL_PASSWORD':
-        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id) 
 
         cat = state.get('category', 'fb_cookie')
         uid = state.get('uid')
@@ -2217,14 +2364,17 @@ def _process_main_router(message):
         track_id = generate_tracking_id()
         cat_display = CAT_MAP.get(cat, "FB Cookies")
 
-        async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, manual_pass, payload])
-        submissions_col.insert_one({
-            "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
-            "password": manual_pass, "payload": payload, "payload_hash": p_hash,
-            "track_id": track_id, "category": cat_display,
-            "category_key": cat, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
-        })
-        users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
+        try:
+            submissions_col.insert_one({
+                "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
+                "password": manual_pass, "payload": payload, "payload_hash": p_hash,
+                "track_id": track_id, "category": cat_display,
+                "category_key": cat, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+            })
+            async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, manual_pass, payload])
+            users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
+        except DuplicateKeyError:
+            return bot.send_message(chat_id, "❌ এই UID টি ইতিপূর্বেই জমা নেওয়া হয়েছে!", reply_markup=submit_tasks_keyboard())
 
         safe_payload = sanitize_html(payload[:2500])
         send_private_backup_message(
@@ -2260,9 +2410,22 @@ if __name__ == "__main__":
             bot.set_webhook(url=f"{render_url}/{TOKEN}")
             print(f"[WEBHOOK LIVE]: {render_url}/{TOKEN}")
         except Exception: pass
-        flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+        
+        try:
+            from waitress import serve
+            serve(flask_app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+        except ImportError:
+            flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threaded=True)
     else:
         try: bot.remove_webhook()
         except Exception: pass
-        threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=10000), daemon=True).start()
+        
+        def run_server():
+            try:
+                from waitress import serve
+                serve(flask_app, host="0.0.0.0", port=10000)
+            except ImportError:
+                flask_app.run(host="0.0.0.0", port=10000, threaded=True)
+                
+        threading.Thread(target=run_server, daemon=True).start()
         bot.infinity_polling(skip_pending=True)
