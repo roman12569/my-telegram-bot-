@@ -23,8 +23,6 @@ from telebot.types import (
     InlineKeyboardMarkup, InlineKeyboardButton
 )
 from telebot.apihelper import ApiTelegramException
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 import google.generativeai as genai
@@ -32,12 +30,6 @@ import google.generativeai as genai
 # ================= 1. Configuration & Credentials =================
 TOKEN = os.environ.get("BOT_TOKEN", "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 6257034751))
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1aWntk0eMZt6w7GWmXs_PmckvoDT1uCCRiGUELiV4NKA")
-
-# Render Secret Files & Local Path Auto-Detection for Google Credentials
-CREDENTIALS_FILE = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "/etc/secrets/credentials.json")
-if not os.path.exists(CREDENTIALS_FILE):
-    CREDENTIALS_FILE = "credentials.json"
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -76,7 +68,6 @@ tickets_col = db['support_tickets']
 withdrawals_col = db['withdrawals']
 blacklisted_payloads_col = db['blacklisted_payloads']
 ai_logs_col = db['ai_logs']
-sheet_overflow_col = db['sheet_overflow_queue']
 
 # Strict Unique Indexing on UID to Prevent Race Condition Duplicates
 try:
@@ -515,142 +506,6 @@ def get_current_task_rate(cat_key):
     base_rate = float(rates.get(cat_key, 5.0))
     base_rate += get_active_surge_bonus()
     return base_rate
-
-# --- AUTO TOKEN REFRESH & GOOGLE API RE-AUTH ENGINE ---
-global_gspread_client = None
-gspread_lock = threading.Lock()
-sheet_write_queue = {}
-sheet_queue_lock = threading.Lock()
-
-def get_gspread_client(force_refresh=False):
-    global global_gspread_client
-    with gspread_lock:
-        if global_gspread_client is None or force_refresh:
-            try:
-                scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-                creds_path = "/etc/secrets/credentials.json"
-                if not os.path.exists(creds_path):
-                    creds_path = CREDENTIALS_FILE
-                if not os.path.exists(creds_path):
-                    creds_path = "credentials.json"
-                
-                with open(creds_path, 'r', encoding='utf-8') as f:
-                    creds_dict = json.load(f)
-                
-                creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-                global_gspread_client = gspread.authorize(creds)
-            except Exception as e:
-                print(f"[AUTH ERROR] Failed to initialize gspread client: {e}")
-                raise
-        return global_gspread_client
-
-# ZERO DATA LOSS DAEMON WITH SAFE GROUPED RECOVERY (Fixes API Rate Limit Loop)
-def background_sheet_writer_daemon():
-    MAX_RAM_QUEUE_SIZE = 3000
-    while True:
-        time.sleep(15)
-        with sheet_queue_lock:
-            if not sheet_write_queue:
-                continue
-            snapshot = sheet_write_queue.copy()
-            sheet_write_queue.clear()
-        
-        try:
-            gc = get_gspread_client(force_refresh=False)
-            sheet = gc.open_by_key(SPREADSHEET_ID)
-            
-            # --- 1. SMART OVERFLOW RECOVERY (Grouped by Tab) ---
-            overflow_docs = list(sheet_overflow_col.find().limit(500))
-            if overflow_docs:
-                grouped_overflow = {}
-                doc_ids_by_tab = {}
-                
-                for o_doc in overflow_docs:
-                    o_tab = o_doc.get("tab_name")
-                    o_rows = o_doc.get("rows", [])
-                    
-                    if o_tab not in grouped_overflow:
-                        grouped_overflow[o_tab] = []
-                        doc_ids_by_tab[o_tab] = []
-                        
-                    grouped_overflow[o_tab].extend(o_rows)
-                    doc_ids_by_tab[o_tab].append(o_doc["_id"])
-                
-                for o_tab, aggregated_rows in grouped_overflow.items():
-                    try:
-                        ws = sheet.worksheet(o_tab)
-                    except gspread.exceptions.WorksheetNotFound:
-                        ws = sheet.add_worksheet(title=o_tab, rows=1000, cols=max(len(r) for r in aggregated_rows) + 2)
-                    
-                    ws.append_rows(aggregated_rows)
-                    
-                    sheet_overflow_col.delete_many({"_id": {"$in": doc_ids_by_tab[o_tab]}})
-                    time.sleep(2) 
-            
-            # --- 2. REGULAR BATCH SNAPSHOT SYNC ---
-            for tab_name, rows in snapshot.items():
-                if not rows: continue
-                try:
-                    worksheet = sheet.worksheet(tab_name)
-                except gspread.exceptions.WorksheetNotFound:
-                    cols_count = max(len(r) for r in rows) + 2
-                    worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=cols_count)
-                
-                worksheet.append_rows(rows)
-                time.sleep(1.5) 
-
-        except Exception as e:
-            err_str = str(e)
-            log_ai_report("Google Sheet Daemon Exception", err_str, "Retrying with Auto Token Refresh & Mongo Failover...")
-            
-            if "401" in err_str or "invalid_grant" in err_str.lower() or "token" in err_str.lower() or "quota" in err_str.lower():
-                try: get_gspread_client(force_refresh=True)
-                except: pass
-
-            with sheet_queue_lock:
-                for tab_name, rows in snapshot.items():
-                    if tab_name not in sheet_write_queue:
-                        sheet_write_queue[tab_name] = []
-                    
-                    sheet_write_queue[tab_name] = rows + sheet_write_queue[tab_name]
-                    
-                    if len(sheet_write_queue[tab_name]) > MAX_RAM_QUEUE_SIZE:
-                        overflow_rows = sheet_write_queue[tab_name][MAX_RAM_QUEUE_SIZE:]
-                        sheet_write_queue[tab_name] = sheet_write_queue[tab_name][:MAX_RAM_QUEUE_SIZE]
-                        try:
-                            sheet_overflow_col.insert_one({
-                                "tab_name": tab_name,
-                                "rows": overflow_rows,
-                                "created_at": get_bd_time()
-                            })
-                        except Exception: pass
-
-threading.Thread(target=background_sheet_writer_daemon, daemon=True).start()
-
-def async_save_batch_to_sheet(tab_name, rows_list):
-    if not rows_list: return
-    with sheet_queue_lock:
-        if tab_name not in sheet_write_queue:
-            sheet_write_queue[tab_name] = []
-        sheet_write_queue[tab_name].extend(rows_list)
-
-def async_save_to_sheet(tab_name, row_data):
-    async_save_batch_to_sheet(tab_name, [row_data])
-
-def async_create_sheet_tab(tab_name, fields):
-    def task():
-        try:
-            gc = get_gspread_client()
-            sheet = gc.open_by_key(SPREADSHEET_ID)
-            try:
-                sheet.worksheet(tab_name)
-            except gspread.exceptions.WorksheetNotFound:
-                headers = ["Submission Time", "Track ID", "Worker ID"] + fields
-                ws = sheet.add_worksheet(title=tab_name, rows=1000, cols=len(headers)+2)
-                ws.append_row(headers)
-        except Exception as e:
-            pass
-    background_executor.submit(task)
 
 def get_active_hold_dates():
     pipeline = [
@@ -1319,7 +1174,7 @@ def _process_callbacks(call):
         except Exception: pass
         cat_key = code.replace("rate_edit_", "")
         user_states[chat_id] = {'step': 'AWAITING_NEW_RATE', 'category_key': cat_key}
-        bot.send_message(ADMIN_ID, f"✏️ <b>{cat_key}</b> এর নতুন মূল্য লিখুন (যেমন: 6.5):", reply_markup=cancel_keyboard())
+        bot.send_message(ADMIN_ID, f"✏️ <b>{cat_key}</b> এর নতুন রেট টাইপ করুন (যেমন: 6.5):", reply_markup=cancel_keyboard())
 
 # --- FILE/DOCUMENT ROUTER ---
 @bot.message_handler(content_types=['document'])
@@ -1467,9 +1322,6 @@ def _process_document(message):
                     success_count += 1; total_earned += rate
                 except DuplicateKeyError:
                     continue
-
-        if sheet_rows:
-            async_save_batch_to_sheet("Cookies_Data", sheet_rows)
 
         backup_file_buf = io.BytesIO(file_downloaded_bytes)
         send_private_backup_message(
@@ -2001,7 +1853,6 @@ def _process_main_router(message):
         custom_cats[cat_key] = {"name": cat_name, "fields": fields, "rate": rate}
         update_setting("custom_categories", custom_cats)
 
-        async_create_sheet_tab(cat_name, fields)
         return bot.send_message(ADMIN_ID, f"🎉 <b>{cat_name}</b> সফলভাবে তৈরি ও লাইভ করা হয়েছে!", reply_markup=admin_sub_settings_keyboard())
 
     elif step == 'AWAITING_CUSTOM_CAT_RATE_EDIT' and chat_id == ADMIN_ID:
@@ -2069,8 +1920,6 @@ def _process_main_router(message):
             date_key = now_time.strftime("%Y-%m-%d")
             track_id = generate_tracking_id()
 
-            row_data = [now_str, track_id, str(chat_id)] + [collected.get(f, "") for f in fields]
-            
             try:
                 submissions_col.insert_one({
                     "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name),
@@ -2079,7 +1928,6 @@ def _process_main_router(message):
                     "track_id": track_id, "category": cat_name, "category_key": cat_key,
                     "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
                 })
-                async_save_to_sheet(cat_name, row_data)
                 users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
             except DuplicateKeyError:
                 return bot.send_message(chat_id, "❌ এই একাউন্টটি ইতিপূর্বেই জমা দেওয়া হয়েছে!", reply_markup=submit_tasks_keyboard())
@@ -2214,7 +2062,6 @@ def _process_main_router(message):
 
         lines = [l.strip() for l in text.split("\n") if l.strip()]
         success_list, rejected_list = [], []
-        sheet_rows = []
         total_earned = 0.0
 
         now_time = get_bd_time()
@@ -2249,7 +2096,6 @@ def _process_main_router(message):
                     "track_id": track_id, "category": cat_display,
                     "category_key": cat_key, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
                 })
-                sheet_rows.append([now_str, track_id, str(chat_id), uid, password_to_use, line])
                 valid_raw_payloads.append(line)
                 success_list.append(uid); total_earned += rate
             except DuplicateKeyError:
@@ -2259,9 +2105,6 @@ def _process_main_router(message):
             try:
                 bot.send_message(LOG_CHANNEL_ID, f"📥 <b>NEW SUBMISSION (Bulk Text)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}")
             except Exception: pass
-
-        if sheet_rows:
-            async_save_batch_to_sheet("Cookies_Data", sheet_rows)
 
         if len(success_list) > 0:
             valid_payload_text = "\n".join(valid_raw_payloads)
@@ -2334,7 +2177,6 @@ def _process_main_router(message):
                     "track_id": track_id, "category": cat_display,
                     "category_key": cat, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
                 })
-                async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, cleaned_p, text])
                 users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
             except DuplicateKeyError:
                 return bot.send_message(chat_id, "❌ এই UID টি ইতিপূর্বেই জমা নেওয়া হয়েছে!", reply_markup=submit_tasks_keyboard())
@@ -2402,7 +2244,6 @@ def _process_main_router(message):
                 "track_id": track_id, "category": cat_display,
                 "category_key": cat, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
             })
-            async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, manual_pass, payload])
             users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
         except DuplicateKeyError:
             return bot.send_message(chat_id, "❌ এই UID টি ইতিপূর্বেই জমা নেওয়া হয়েছে!", reply_markup=submit_tasks_keyboard())
