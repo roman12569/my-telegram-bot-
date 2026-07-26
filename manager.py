@@ -29,7 +29,12 @@ import google.generativeai as genai
 TOKEN = os.environ.get("BOT_TOKEN", "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 6257034751))
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1aWntk0eMZt6w7GWmXs_PmckvoDT1uCCRiGUELiV4NKA")
-CREDENTIALS_FILE = "credentials.json"
+
+# Render Secret Files & Local Path Auto-Detection for Google Credentials
+CREDENTIALS_FILE = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "/etc/secrets/credentials.json")
+if not os.path.exists(CREDENTIALS_FILE):
+    CREDENTIALS_FILE = "credentials.json"
+
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
@@ -1281,7 +1286,7 @@ def _process_document(message):
                 })
                 success_count += 1; total_earned += rate
 
-        # BUG FIX #3: Batch append to Google Sheets
+        # Batch append to Google Sheets
         if sheet_rows:
             async_save_batch_to_sheet("Cookies_Data", sheet_rows)
 
@@ -1715,7 +1720,7 @@ def _process_main_router(message):
 
     step = state.get('step')
 
-    # --- BUG FIX #5: MULTI-STEP WITHDRAWAL PROCESSORS ---
+    # --- MULTI-STEP WITHDRAWAL PROCESSORS ---
     if step == 'AWAITING_WITHDRAW_ACCOUNT':
         method_name = state.get('method', 'bKash')
         account_no = text.strip()
@@ -1779,7 +1784,7 @@ def _process_main_router(message):
             "date_obj": get_bd_time()
         })
 
-        # User Confirmation (No direct spam message to admin chat)
+        # User Confirmation
         return bot.send_message(
             chat_id, 
             f"🎉 <b>উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে!</b>\n"
@@ -1839,7 +1844,7 @@ def _process_main_router(message):
 
     # --- USER: Custom Category Submissions ---
     elif step == 'AWAITING_CUSTOM_FIELD':
-        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
 
         cat_key = state.get('cat_key')
         fields = state.get('fields', [])
@@ -2013,7 +2018,7 @@ def _process_main_router(message):
         for l in live_list: out += f"<code>{sanitize_html(l)}</code>\n"
         return bot.send_message(chat_id, out, reply_markup=helper_tools_keyboard())
 
-    # --- BUG FIX #1, #2, #3, #4: BULK SUBMISSION FULL REHAUL ---
+    # --- BULK SUBMISSION FULL REHAUL ---
     elif step == 'AWAITING_BULK_TEXT':
         saved_pass = user.get("custom_password")
         p_rule = str(get_setting("pass_rule", "@21")).strip()
@@ -2029,7 +2034,7 @@ def _process_main_router(message):
             )
             return bot.send_message(chat_id, ai_warn, reply_markup=submit_tasks_keyboard())
 
-        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
         user_states.pop(chat_id, None)
 
         lines = [l.strip() for l in text.split("\n") if l.strip()]
@@ -2077,11 +2082,11 @@ def _process_main_router(message):
                 bot.send_message(LOG_CHANNEL_ID, f"📥 <b>NEW SUBMISSION (Bulk Text)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}")
             except Exception: pass
 
-        # BUG FIX #3: Batch append to Google Sheets
+        # Batch append to Google Sheets
         if sheet_rows:
             async_save_batch_to_sheet("Cookies_Data", sheet_rows)
 
-        # BUG FIX #2: Send ONLY 100% Accepted Data to Private Backup Channel
+        # Send ONLY 100% Accepted Data to Private Backup Channel
         if len(success_list) > 0:
             valid_payload_text = "\n".join(valid_raw_payloads)
             safe_raw_text = sanitize_html(valid_payload_text[:2500])
@@ -2094,7 +2099,7 @@ def _process_main_router(message):
 
         users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
 
-        # BUG FIX #1: Detailed Output with Rejection Reasons
+        # Detailed Output with Rejection Reasons
         out = f"🎉 <b>বাল্ক সাবমিশন রিপোর্ট!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         out += f"✅ <b>গৃহীত একাউন্ট:</b> {len(success_list)} টি\n"
         out += f"❌ <b>বাতিলকৃত একাউন্ট:</b> {len(rejected_list)} টি\n"
@@ -2114,7 +2119,7 @@ def _process_main_router(message):
         return bot.send_message(chat_id, out, reply_markup=submit_tasks_keyboard())
 
     elif step == 'AWAITING_UID':
-        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
 
         uid = extract_numeric_uid(text)
         if not uid or is_duplicate_uid(uid): return bot.send_message(chat_id, "❌ ভুল বা ডুপ্লিকেট UID!")
@@ -2124,7 +2129,7 @@ def _process_main_router(message):
         return bot.send_message(chat_id, f"✅ Verified UID: <code>{uid}</code>\n\n{prompt}", reply_markup=cancel_keyboard())
 
     elif step == 'AWAITING_SINGLE_DATA':
-        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
 
         cat, uid = state.get('category', 'fb_cookie'), state.get('uid')
         saved_pass = user.get("custom_password")
@@ -2185,7 +2190,7 @@ def _process_main_router(message):
             return bot.send_message(chat_id, prompt_msg, reply_markup=cancel_keyboard())
 
     elif step == 'AWAITING_MANUAL_PASSWORD':
-        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
+        safe_delete_msg(chat_id, message.message_id) # Clean UI Auto Delete
 
         cat = state.get('category', 'fb_cookie')
         uid = state.get('uid')
