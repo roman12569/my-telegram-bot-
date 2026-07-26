@@ -1647,7 +1647,7 @@ def _process_main_router(message):
         cat = state.get('category', 'fb_cookie')
         state['uid'] = uid; state['step'] = 'AWAITING_SINGLE_DATA'
         prompt = "🍪 Cookies পেস্ট করুন:" if "cookie" in cat else "🔐 2FA Secret Key দিন:"
-        return bot.send_message(chat_id, f"✅ Verified UID: <code>{uid}</code>\n\n{prompt}")
+        return bot.send_message(chat_id, f"✅ Verified UID: <code>{uid}</code>\n\n{prompt}", reply_markup=cancel_keyboard())
 
     elif step == 'AWAITING_SINGLE_DATA':
         cat, uid = state.get('category', 'fb_cookie'), state.get('uid')
@@ -1662,7 +1662,6 @@ def _process_main_router(message):
                     has_valid_saved_pass = True
 
         if has_valid_saved_pass:
-            user_states.pop(chat_id, None)
             now_time = get_bd_time()
             now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
             date_key = now_time.strftime("%Y-%m-%d")
@@ -1694,7 +1693,18 @@ def _process_main_router(message):
                 )
             except Exception: pass
 
-            return bot.send_message(chat_id, f"🎉 <b>কাজ জমা সফল হয়েছে!</b>\n📌 Track ID: <code>{track_id}</code>\n💰 আর্ন (এসক্রো হোল্ড): ৳{rate:.2f}", reply_markup=submit_tasks_keyboard())
+            # Stay in continuous single submission loop
+            state['step'] = 'AWAITING_UID'
+            state.pop('uid', None)
+            state.pop('payload', None)
+            user_states[chat_id] = state
+
+            return bot.send_message(
+                chat_id, 
+                f"🎉 <b>কাজ জমা সফল!</b> (Track: <code>{track_id}</code> | ৳{rate:.2f})\n\n"
+                f"📌 <b>{cat_display}</b>\n► পরবর্তী UID বা প্রোফাইল লিঙ্ক সেন্ড করুন:", 
+                reply_markup=cancel_keyboard()
+            )
         else:
             state['payload'] = text
             state['step'] = 'AWAITING_MANUAL_PASSWORD'
@@ -1714,7 +1724,6 @@ def _process_main_router(message):
         if p_rule and p_rule.lower() != "none" and p_rule not in manual_pass:
             return bot.send_message(chat_id, f"❌ <b>ভুল পাসওয়ার্ড!</b>\nআজকের পাসওয়ার্ড নিয়ম (<code>{sanitize_html(p_rule)}</code>) অন্তর্ভুক্ত থাকতে হবে। সঠিক পাসওয়ার্ড দিন:", reply_markup=cancel_keyboard())
 
-        user_states.pop(chat_id, None)
         now_time = get_bd_time()
         now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
         date_key = now_time.strftime("%Y-%m-%d")
@@ -1747,10 +1756,19 @@ def _process_main_router(message):
         except Exception: pass
 
         update_user_field(chat_id, "temp_pending_password", manual_pass)
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("💾 এই পাসওয়ার্ডটি ডিফল্ট হিসেবে সেভ করুন", callback_data="save_pass_default"))
 
-        return bot.send_message(chat_id, f"🎉 <b>কাজ জমা সফল হয়েছে!</b>\n📌 Track ID: <code>{track_id}</code>\n🔑 পাসওয়ার্ড: <code>{sanitize_html(manual_pass)}</code>\n💰 আর্ন (এসক্রো হোল্ড): ৳{rate:.2f}", reply_markup=markup)
+        # Stay in continuous single submission loop
+        state['step'] = 'AWAITING_UID'
+        state.pop('uid', None)
+        state.pop('payload', None)
+        user_states[chat_id] = state
+
+        return bot.send_message(
+            chat_id, 
+            f"🎉 <b>কাজ জমা সফল!</b> (Track: <code>{track_id}</code> | Pass: <code>{sanitize_html(manual_pass)}</code> | ৳{rate:.2f})\n\n"
+            f"📌 <b>{cat_display}</b>\n► পরবর্তী UID বা প্রোফাইল লিঙ্ক সেন্ড করুন:", 
+            reply_markup=cancel_keyboard()
+        )
 
 # ================= 9. Production Server Engine =================
 
