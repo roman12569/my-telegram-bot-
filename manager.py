@@ -1193,9 +1193,9 @@ def _process_main_router(message):
         prof_card = (
             f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
             f"┃  👤 USER PROFILE // WALLET TERMINAL  ┃\n"
-            f"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
             f"┃ 👤 NAME   : <code>{safe_name[:18]}</code>\n"
-            f"┃ 📊 TASKS  : <code>{cnt:<10}</code> TIS         ┃\n"
+            f"┃ 📊 TASKS  : <code>{cnt:<10}</code> TASKS       ┃\n"
             f"┃ 💰 MAIN   : <code>৳ {bal:<10.2f} BDT</code>    ┃\n"
             f"┃ ⏳ HOLD   : <code>৳ {hold_bal:<10.2f} BDT</code>    ┃\n"
             f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
