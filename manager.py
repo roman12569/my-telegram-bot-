@@ -19,6 +19,7 @@ from telebot.types import (
     ReplyKeyboardMarkup, KeyboardButton, 
     InlineKeyboardMarkup, InlineKeyboardButton
 )
+from telebot.apihelper import ApiTelegramException
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from pymongo import MongoClient
@@ -36,7 +37,7 @@ CREDENTIALS_FILE = "credentials.json"
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
 
 LOG_CHANNEL_ID = -1003943094107
-BACKUP_CHANNEL_ID = "-1003943094107"
+BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID", -1003943094107))
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
@@ -74,6 +75,38 @@ user_states = {}
 # Timezone definition for Bangladesh (UTC+6)
 BD_TIMEZONE = timezone(timedelta(hours=6))
 
+# Dynamic Category Mapping Dictionary
+CAT_MAP = {
+    "fb_cookie": "FB Cookies",
+    "fb_2fa": "FB 2FA",
+    "ig_cookie": "IG Cookies",
+    "ig_2fa": "IG 2FA"
+}
+
+# Dynamic Dataset for Unlimited Profile Combinations
+BD_FIRST_NAMES = [
+    "Sakib", "Tanvir", "Rahim", "Rakib", "Nayeem", "Ariful", "Mehedi", "Mahfuz", 
+    "Farhan", "Ashfaq", "Sumon", "Imran", "Hasib", "Shahadat", "Rayhan", "Tasnim", 
+    "Nusrat", "Riya", "Sadia", "Mim", "Farhana", "Sultana", "Anik", "Sabbir", 
+    "Fahim", "Jubayer", "Naim", "Tariq", "Zubair", "Alim", "Shakil", "Mahmud"
+]
+BD_LAST_NAMES = [
+    "Hasan", "Ahmed", "Uddin", "Islam", "Khan", "Chowdhury", "Rahman", "Hossain", 
+    "Sheikh", "Mahmud", "Sarkar", "Miah", "Akter", "Siddique", "Bhuiyan", "Kabir", "Ali", "Alam"
+]
+
+USA_FIRST_NAMES = [
+    "James", "John", "Robert", "Michael", "William", "David", "Richard", "Joseph", 
+    "Thomas", "Charles", "Daniel", "Matthew", "Anthony", "Mark", "Steven", "Paul", 
+    "Andrew", "Joshua", "Kenneth", "Kevin", "Mary", "Patricia", "Jennifer", "Linda", 
+    "Elizabeth", "Barbara", "Susan", "Jessica", "Sarah", "Karen", "Nancy", "Lisa", "Sandra"
+]
+USA_LAST_NAMES = [
+    "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", 
+    "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", 
+    "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson", "White", "Harris"
+]
+
 # ================= 2. Sanitization, Helper & AI Functions =================
 
 def get_bd_time():
@@ -84,13 +117,75 @@ def log_ai_report(issue_type, description, fix_action):
     """Logs Background Error Recovery quietly."""
     now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
     ai_logs_col.insert_one({"timestamp": now_str, "type": issue_type, "description": description, "action": fix_action})
-    audit_msg = f"🧠 <b>[AI AUTO-FIX REPORT]</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏱️ <b>সময়:</b> {now_str}\n📌 <b>সমস্যা:</b> {description}\n🛠️ <b>অ্যাকশন:</b> {fix_action}"
+    audit_msg = (
+        f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+        f"┃ 🧠 AI AUTO-FIX AUDIT LOG            ┃\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+        f"┃ ⏱️ TIME   : {now_str}\n"
+        f"┃ 📌 ISSUE  : {description[:25]}\n"
+        f"┃ 🛠️ ACTION : {fix_action[:25]}\n"
+        f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+    )
     try: bot.send_message(ADMIN_ID, audit_msg)
     except Exception: pass
 
 def sanitize_html(text):
     if not text: return "Worker"
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def generate_profile_data(country):
+    """Generates dynamic 1-click copiable cyber persona profile data."""
+    if country == "bd":
+        fn = random.choice(BD_FIRST_NAMES)
+        ln = random.choice(BD_LAST_NAMES)
+        flag = "🇧🇩 BANGLADESH"
+    else:
+        fn = random.choice(USA_FIRST_NAMES)
+        ln = random.choice(USA_LAST_NAMES)
+        flag = "🇺🇸 USA"
+
+    sep = random.choice(["_", ".", ""])
+    num_suffix = random.choice([str(random.randint(10, 999)), str(random.randint(1995, 2006))])
+    username = f"{fn.lower()}{sep}{ln.lower()}{num_suffix}"
+
+    year = random.randint(1995, 2006)
+    month = random.randint(1, 12)
+    day = random.randint(1, 28)
+    dob_str = f"{day:02d}/{month:02d}/{year}"
+
+    out = (
+        f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+        f"┃  🎲 CYBER PERSONA // {flag:<15}┃\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+        f"┃ 👤 FIRST NAME : <code>{fn}</code>\n"
+        f"┃ 👤 LAST NAME  : <code>{ln}</code>\n"
+        f"┃ 🆔 MAIL/IG ID : <code>{username}</code>\n"
+        f"┃ 🎂 BIRTH DATE : <code>{dob_str}</code>\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+        f"┃ 💡 TAP ON TEXT TO COPY INSTANTLY     ┃\n"
+        f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+    )
+
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔄 নতুন প্রোফাইল তৈরি করুন (Refresh)", callback_data=f"gen_prof_{country}"))
+    return out, markup
+
+def send_private_backup_message(content, doc_buf=None, doc_name=None):
+    """Sends async backup log/file to the private BACKUP_CHANNEL_ID with 4096 length safety."""
+    def task():
+        try:
+            safe_content = content
+            if len(safe_content) > 3800:
+                safe_content = safe_content[:3750] + "\n\n⚠️ <i>[Data Truncated for Telegram Limit]</i>"
+
+            if doc_buf and doc_name:
+                doc_buf.seek(0)
+                bot.send_document(BACKUP_CHANNEL_ID, (doc_name, doc_buf), caption=safe_content)
+            else:
+                bot.send_message(BACKUP_CHANNEL_ID, safe_content)
+        except Exception as e:
+            log_ai_report("Backup Channel Error", str(e), "Check if Bot is Admin in private backup channel.")
+    threading.Thread(target=task, daemon=True).start()
 
 def make_progress_bar(processed, total, length=10):
     if not total or total == 0: return "░" * length
@@ -212,12 +307,22 @@ def async_save_to_sheet(tab_name, row_data):
     threading.Thread(target=task, daemon=True).start()
 
 def get_active_hold_dates():
-    """Gets sorted list of unique dates (YYYY-MM-DD) that have pending 'Hold' tasks, with dynamic legacy fallback."""
+    """Gets sorted list of unique dates (YYYY-MM-DD) that have pending 'Hold' tasks."""
     pipeline = [
         {"$match": {"status": "Hold"}},
         {"$project": {
             "effective_date": {
-                "$ifNull": ["$date_key", {"$substr": ["$date_str", 0, 10]}]
+                "$ifNull": [
+                    "$date_key",
+                    {"$cond": [
+                        {"$and": [
+                            {"$ne": ["$date_str", None]},
+                            {"$gte": [{"$strLenCP": {"$ifNull": ["$date_str", ""]}}, 10]}
+                        ]},
+                        {"$substrCP": ["$date_str", 0, 10]},
+                        "Legacy"
+                    ]}
+                ]
             }
         }},
         {"$group": {"_id": "$effective_date"}}
@@ -228,11 +333,21 @@ def get_active_hold_dates():
     return dates
 
 def get_all_recorded_dates():
-    """Gets sorted list of all dates in DB for Archive Vault, with dynamic legacy fallback."""
+    """Gets sorted list of all dates in DB for Archive Vault."""
     pipeline = [
         {"$project": {
             "effective_date": {
-                "$ifNull": ["$date_key", {"$substr": ["$date_str", 0, 10]}]
+                "$ifNull": [
+                    "$date_key",
+                    {"$cond": [
+                        {"$and": [
+                            {"$ne": ["$date_str", None]},
+                            {"$gte": [{"$strLenCP": {"$ifNull": ["$date_str", ""]}}, 10]}
+                        ]},
+                        {"$substrCP": ["$date_str", 0, 10]},
+                        "Legacy"
+                    ]}
+                ]
             }
         }},
         {"$group": {"_id": "$effective_date"}}
@@ -271,27 +386,20 @@ def generate_worker_badge_image_py(worker_id, username, total_submissions):
     buf.seek(0)
     return buf
 
-# ================= 4. UI Keyboards =================
+# ================= 4. UI Keyboards (2-2-1 CYBER GRID LAYOUT) =================
 
 def main_bottom_keyboard(chat_id):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("💼 টাস্ক ও টুলস"), KeyboardButton("👤 আমার অ্যাকাউন্ট"))
-    markup.add(KeyboardButton("🎁 বোনাস ও সাপোর্ট"), KeyboardButton("🏠 প্রধান মেনু"))
-    if chat_id == ADMIN_ID: markup.add(KeyboardButton("👑 এডমিন প্যানেল"))
-    return markup
-
-def tasks_and_tools_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("📋 কাজ জমা দিন"), KeyboardButton("🛠 হেল্পার টুলস"))
-    markup.add(KeyboardButton("📜 কাজের ইতিহাস"), KeyboardButton("📱 ইউজার-এজেন্ট"))
-    markup.add(KeyboardButton("🏠 প্রধান মেনু"))
+    markup.add(KeyboardButton("⚡ কাজ জমা সেন্টার"), KeyboardButton("🛠 হেল্পার টুলস"))
+    markup.add(KeyboardButton("👤 প্রোফাইল ও ওয়ালেট"), KeyboardButton("🎁 রিওয়ার্ড ও সাপোর্ট"))
+    if chat_id == ADMIN_ID: markup.add(KeyboardButton("👑 এডমিন কন্ট্রোল সেন্টার"))
     return markup
 
 def submit_tasks_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("📌 সিঙ্গেল জমা"), KeyboardButton("📦 বাল্ক জমা (Text)"))
     markup.add(KeyboardButton("📊 এক্সেল ফাইল জমা"), KeyboardButton("⚙️ পাসওয়ার্ড নিয়ম"))
-    markup.add(KeyboardButton("🔙 টাস্ক মেনুতে ফিরুন"), KeyboardButton("🏠 প্রধান মেনু"))
+    markup.add(KeyboardButton("🔙 পেছনে যান"), KeyboardButton("🏠 মেইন মেনু"))
     return markup
 
 def category_bottom_keyboard():
@@ -299,27 +407,27 @@ def category_bottom_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton(f"📄 FB Cookies (৳{rates['fb_cookie']})"), KeyboardButton(f"🔐 FB 2FA (৳{rates['fb_2fa']})"))
     markup.add(KeyboardButton(f"📷 IG Cookies (৳{rates['ig_cookie']})"), KeyboardButton(f"🔐 IG 2FA (৳{rates['ig_2fa']})"))
-    markup.add(KeyboardButton("🔙 কাজ জমা মেনুতে ফিরুন"), KeyboardButton("🏠 প্রধান মেনু"))
+    markup.add(KeyboardButton("🔙 কাজ জমা মেনুতে ফিরুন"), KeyboardButton("🏠 মেইন মেনু"))
     return markup
 
 def helper_tools_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🔑 2FA কোড জেনারেটর"), KeyboardButton("✉️ টেম্প ইমেইল"))
     markup.add(KeyboardButton("🚀 বাল্ক FB লাইভ চেকার"), KeyboardButton("🚀 বাল্ক IG লাইভ চেকার"))
-    markup.add(KeyboardButton("👤 র্যান্ডম নাম জেনারেটর"))
-    markup.add(KeyboardButton("🔙 টাস্ক মেনুতে ফিরুন"), KeyboardButton("🏠 প্রধান মেনু"))
+    markup.add(KeyboardButton("👤 র্যান্ডম প্রোফাইল জেনারেটর"))
+    markup.add(KeyboardButton("🔙 পেছনে যান"), KeyboardButton("🏠 মেইন মেনু"))
     return markup
 
 def account_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("💳 Withdraw"), KeyboardButton("🪪 ভেরিফাইড আইডি কার্ড"))
-    markup.add(KeyboardButton("🏠 প্রধান মেনু"))
+    markup.add(KeyboardButton("🏠 মেইন মেনু"))
     return markup
 
 def bonus_support_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🎁 Claim Daily Bonus"), KeyboardButton("🏆 লিডারবোর্ড"))
-    markup.add(KeyboardButton("💬 এডমিন সাপোর্ট টিকিট"), KeyboardButton("🏠 প্রধান মেনু"))
+    markup.add(KeyboardButton("💬 এডমিন সাপোর্ট টিকিট"), KeyboardButton("🏠 মেইন মেনু"))
     return markup
 
 def admin_bottom_keyboard():
@@ -328,10 +436,10 @@ def admin_bottom_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("📊 স্মার্ট ড্যাশবোর্ড ও রিপোর্ট"), KeyboardButton("📂 স্মার্ট ফাইল এক্সপোর্ট"))
     markup.add(KeyboardButton("🤖 বায়ার রিপোর্ট অটো-ম্যাচার"), KeyboardButton("🏛️ আর্কাইভ ও বন্ধ ফাইল"))
-    markup.add(KeyboardButton("⚙️ সেট রেট ও চার্জ"), KeyboardButton("📢 ব্রডকাস্ট নোটিশ"))
-    markup.add(KeyboardButton("⏳ ম্যানুয়াল পেন্ডিং চেক"), KeyboardButton("👤 ইউজার ম্যানেজার"))
-    markup.add(KeyboardButton("🧠 AI সিটেডেল অডিট"), KeyboardButton(m_btn))
-    markup.add(KeyboardButton("🏠 প্রধান মেনু"))
+    markup.add(KeyboardButton("⚙️ সেট রেট ও চার্জ"), KeyboardButton("🔑 পাসওয়ার্ড নিয়ম সেট"))
+    markup.add(KeyboardButton("📢 ব্রডকাস্ট নোটিশ"), KeyboardButton("⏳ ম্যানুয়াল পেন্ডিং চেক"))
+    markup.add(KeyboardButton("👤 ইউজার ম্যানেজার"), KeyboardButton("🧠 AI সিটেডেল অডিট"))
+    markup.add(KeyboardButton(m_btn), KeyboardButton("🏠 মেইন মেনু"))
     return markup
 
 def cancel_keyboard():
@@ -339,48 +447,83 @@ def cancel_keyboard():
     markup.add(KeyboardButton("❌ বাতিল করুন"))
     return markup
 
-# ================= 5. Background Daemon & Report Scheduler =================
+# ================= 5. Dynamic User Control Center Render Engine =================
 
-def generate_daily_report_text(date_target=None):
-    if not date_target: date_target = get_bd_time()
-    
-    start_of_day = date_target.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_day = date_target.replace(hour=23, minute=59, second=59, microsecond=999)
-    
-    approved_list = list(submissions_col.find({"status": "Approved", "date_obj": {"$gte": start_of_day, "$lte": end_of_day}}))
-    total_approved = len(approved_list)
-    hold_count = submissions_col.count_documents({"status": "Hold", "date_obj": {"$gte": start_of_day, "$lte": end_of_day}})
-    rejected_count = submissions_col.count_documents({"status": "Rejected", "date_obj": {"$gte": start_of_day, "$lte": end_of_day}})
-    
-    category_breakdown = {}
-    total_payout = 0.0
-    
-    for sub in approved_list:
-        cat = sub.get("category", "FB Cookies")
-        rate = float(sub.get("rate", 0.0))
-        total_payout += rate
-        if cat not in category_breakdown: category_breakdown[cat] = {"count": 0, "amount": 0.0}
-        category_breakdown[cat]["count"] += 1; category_breakdown[cat]["amount"] += rate
+def render_user_manager_page(admin_chat_id, message_id=None, page=1):
+    """
+    Renders real-time paginated user manager inside Cyber Frame.
+    Includes Button HTML-Encoding fixes & Telegram duplicate message safeguards.
+    """
+    users_per_page = 5
+    total_u = users_col.count_documents({})
+    banned_u = users_col.count_documents({"banned": True})
+    active_u = total_u - banned_u
 
-    report = (
-        f"📊 <b>DAILY EARNING REPORT ({date_target.strftime('%Y-%m-%d')})</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📥 মোট সাবমিশন : <b>{total_approved + hold_count + rejected_count} টি</b>\n"
-        f"✅ এপ্রুভড      : <b>{total_approved} টি</b>\n"
-        f"⏳ এসক্রো হোল্ড  : <b>{hold_count} টি</b>\n"
-        f"❌ রিজেক্টেড    : <b>{rejected_count} টি</b>\n"
-        f"💰 বিতরণকৃত পেমেন্ট : <b>৳{total_payout:.2f}</b>\n\n"
-        f"🛡️ <b>ক্যাটাগরি ভিত্তিক বিবরণ:</b>\n"
+    total_pages = max(1, (total_u + users_per_page - 1) // users_per_page)
+    page = max(1, min(page, total_pages))
+
+    skip = (page - 1) * users_per_page
+    user_list = list(users_col.find().sort("joined_date", -1).skip(skip).limit(users_per_page))
+
+    out_msg = (
+        f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+        f"┃  👥 USER CONTROL CENTER // P{page}/{total_pages:<3} ┃\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+        f"┃ 📊 TOTAL MEMBERS : <code>{total_u:<18}</code>┃\n"
+        f"┃ 🟢 ACTIVE USERS  : <code>{active_u:<18}</code>┃\n"
+        f"┃ 🔴 BANNED USERS  : <code>{banned_u:<18}</code>┃\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\n"
     )
-    for cat, data in category_breakdown.items(): report += f"• {cat} : {data['count']} টি (৳{data['amount']:.2f})\n"
-    report += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    return report
+
+    markup = InlineKeyboardMarkup(row_width=1)
+
+    for i, u in enumerate(user_list, start=skip + 1):
+        u_id = u["_id"]
+        raw_fname = str(u.get("first_name", "Worker"))
+        fname_html = sanitize_html(raw_fname)
+        uname = u.get("username", "")
+        uname_str = f"(@{sanitize_html(uname)})" if uname else "(No Username)"
+        is_banned = u.get("banned", False)
+
+        st_badge = "🔴 Banned" if is_banned else "🟢 Active"
+        out_msg += f"<b>{i}. {fname_html}</b> {uname_str}\n   🆔 ID: <code>{u_id}</code> | Status: <b>{st_badge}</b>\n\n"
+
+        btn_fname = raw_fname[:10]
+        if is_banned:
+            btn_text = f"🔴 {btn_fname} — 🟢 আনব্যান করুন"
+        else:
+            btn_text = f"🟢 {btn_fname} — 🚫 ব্যান করুন"
+
+        markup.add(InlineKeyboardButton(btn_text, callback_data=f"toggle_ban_{u_id}_{page}"))
+
+    out_msg += "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("◀️ আগের পেজ", callback_data=f"um_page_{page - 1}"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton("পরের পেজ ➡️", callback_data=f"um_page_{page + 1}"))
+
+    if nav_row:
+        markup.row(*nav_row)
+
+    if message_id:
+        try:
+            bot.edit_message_text(out_msg, admin_chat_id, message_id, reply_markup=markup)
+        except ApiTelegramException as e:
+            if "message is not modified" in str(e).lower():
+                pass
+            else:
+                bot.send_message(admin_chat_id, out_msg, reply_markup=markup)
+        except Exception:
+            bot.send_message(admin_chat_id, out_msg, reply_markup=markup)
+    else:
+        bot.send_message(admin_chat_id, out_msg, reply_markup=markup)
+
+# ================= 6. Background Daemon & Report Scheduler =================
 
 def escrow_daemon():
-    """
-    Escrow Daemon: Purely monitoring heartbeat.
-    Automatic time-based approvals ARE DISABLED to prevent paying before Buyer Reports.
-    """
+    """Escrow Daemon: Purely monitoring heartbeat."""
     while True:
         try:
             time.sleep(3600)
@@ -388,12 +531,12 @@ def escrow_daemon():
 
 threading.Thread(target=escrow_daemon, daemon=True).start()
 
-# ================= 6. Flask Webhook Server =================
+# ================= 7. Flask Webhook Server =================
 
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
-def flask_home(): return "OEB NEXUS Production Engine Active!"
+def flask_home(): return "OEB NEXUS Cyber Production Engine Active!"
 
 @flask_app.route(f'/{TOKEN}', methods=['POST'])
 def telegram_webhook():
@@ -402,7 +545,7 @@ def telegram_webhook():
         return '', 200
     abort(403)
 
-# ================= 7. Core Command & Router Handlers =================
+# ================= 8. Core Command & Router Handlers =================
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -424,7 +567,27 @@ def send_welcome(message):
             markup.add(InlineKeyboardButton("✅ Verify / ভেরিফাই করুন", callback_data="verify_join"))
             return bot.send_message(chat_id, "🔒 <b>চ্যানেল ভেরিফিকেশন প্রয়োজন:</b>", reply_markup=markup)
 
-        bot.send_message(chat_id, f"👑 <b>ONLINE EARNING BAZAR</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nস্বাগতম <b>{sanitize_html(message.from_user.first_name)}</b>! নিচের অপশন থেকে সার্ভিস নির্বাচন করুন:", reply_markup=main_bottom_keyboard(chat_id))
+        fname = sanitize_html(message.from_user.first_name)
+        bal = float(user.get("balance") or 0.0)
+        hold_bal = float(user.get("hold_balance") or 0.0)
+
+        welcome_card = (
+            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃  ❖ OEB NEXUS // CYBER CORE v5.0     ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ 👤 OPERATOR : <code>{fname[:18]}</code>\n"
+            f"┃ 🆔 USER ID  : <code>#{chat_id}</code>\n"
+            f"┃                                      ┃\n"
+            f"┃ 💳 WALLET   : <code>৳ {bal:<10.2f} BDT</code>\n"
+            f"┃ ⏳ ESCROW   : <code>৳ {hold_bal:<10.2f} BDT</code>\n"
+            f"┃ 🛡 STATUS   : 🟢 <code>ACTIVE STAFF</code>        ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ ⚡ SYSTEM STATUS : ONLINE // 256-BIT  ┃\n"
+            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
+            f"  ► <i>কাজের জন্য নিচের টার্মিনাল বাটন ব্যবহার করুন:</i>"
+        )
+
+        bot.send_message(chat_id, welcome_card, reply_markup=main_bottom_keyboard(chat_id))
     except Exception as e: log_ai_report("Start Handler Error", str(e), "Caught gracefully.")
 
 # --- CALLBACK ROUTER ---
@@ -438,37 +601,109 @@ def _process_callbacks(call):
     code = call.data
 
     if chat_id != ADMIN_ID and get_setting("maintenance_mode", False):
-        return bot.answer_callback_query(call.id, "🛠 বটের সার্ভার আপডেটের কাজ চলছে! দয়া করে কিছুক্ষণ পর চেষ্টা করুন.", show_alert=True)
-
-    bot.answer_callback_query(call.id)
+        try: bot.answer_callback_query(call.id, "🛠 বটের সার্ভার আপডেটের কাজ চলছে! দয়া করে কিছুক্ষণ পর চেষ্টা করুন.", show_alert=True)
+        except Exception: pass
+        return
 
     if code == "verify_join":
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         if check_force_join(chat_id):
             bot.delete_message(chat_id, call.message.message_id)
             bot.send_message(chat_id, "✅ ভেরিফিকেশন সফল হয়েছে!", reply_markup=main_bottom_keyboard(chat_id))
         else: bot.send_message(chat_id, "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি!")
 
     elif code == "save_pass_default":
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         user = get_user_data(chat_id)
         temp_pass = user.get("temp_pending_password", "")
+        p_rule = str(get_setting("pass_rule", "")).strip()
+        
         if temp_pass:
-            update_user_field(chat_id, "custom_password", temp_pass)
-            update_user_field(chat_id, "temp_pending_password", "")
-            bot.edit_message_text(f"✅ <b>সফল!</b> আপনার পাসওয়ার্ডটি ডিফল্ট হিসেবে সেভ করা হয়েছে: <code>{temp_pass}</code>", chat_id, call.message.message_id)
+            if p_rule and p_rule.lower() != "none" and p_rule not in temp_pass:
+                bot.edit_message_text(f"❌ <b>পাসওয়ার্ড সেভ করা সম্ভব হয়নি!</b>\nপাসওয়ার্ডের মধ্যে আজকের নিয়ম (<code>{sanitize_html(p_rule)}</code>) নেই।", chat_id, call.message.message_id)
+            else:
+                update_user_field(chat_id, "custom_password", temp_pass)
+                update_user_field(chat_id, "temp_pending_password", "")
+                bot.edit_message_text(f"✅ <b>সফল!</b> আপনার পাসওয়ার্ডটি ডিফল্ট হিসেবে সেভ করা হয়েছে: <code>{sanitize_html(temp_pass)}</code>", chat_id, call.message.message_id)
         else:
             bot.edit_message_text("⚠️ কোনো পেন্ডিং পাসওয়ার্ড পাওয়া যায়নি!", chat_id, call.message.message_id)
 
+    # --- WORKER INLINE PASSWORD ACTIONS ---
+    elif code == "user_set_custom_pass":
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        p_rule = str(get_setting("pass_rule", "")).strip()
+        user_states[chat_id] = {'step': 'AWAITING_USER_SET_PASS'}
+        msg = f"✏️ <b>আপনার নতুন পছন্দমতো ডিফল্ট পাসওয়ার্ডটি লিখে পাঠান:</b>\n"
+        if p_rule and p_rule.lower() != "none":
+            msg += f"\n⚠️ <i>মনে রাখবেন: পাসওয়ার্ডের ভেতরে আজকের নিয়ম (<code>{sanitize_html(p_rule)}</code>) অবশ্যই অন্তর্ভুক্ত থাকতে হবে!</i>"
+        bot.send_message(chat_id, msg, reply_markup=cancel_keyboard())
+
+    elif code == "user_remove_custom_pass":
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        update_user_field(chat_id, "custom_password", "")
+        bot.edit_message_text("🗑️ <b>আপনার সেভ করা ডিফল্ট পাসওয়ার্ড সফলভাবে মুছে ফেলা হয়েছে!</b>", chat_id, call.message.message_id)
+
+    # --- UNLIMITED PROFILE GENERATOR CALLBACKS ---
+    elif code.startswith("gen_prof_"):
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        country = code.replace("gen_prof_", "")
+        msg_text, markup = generate_profile_data(country)
+        try:
+            bot.edit_message_text(msg_text, chat_id, call.message.message_id, reply_markup=markup)
+        except ApiTelegramException as e:
+            if "message is not modified" in str(e).lower():
+                pass
+            else:
+                bot.send_message(chat_id, msg_text, reply_markup=markup)
+        except Exception:
+            bot.send_message(chat_id, msg_text, reply_markup=markup)
+
+    # --- DYNAMIC USER MANAGER HANDLERS ---
+    elif code.startswith("um_page_") and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        target_page = int(code.replace("um_page_", ""))
+        render_user_manager_page(ADMIN_ID, call.message.message_id, target_page)
+
+    elif code.startswith("toggle_ban_") and chat_id == ADMIN_ID:
+        parts = code.split("_")
+        target_uid = int(parts[2])
+        target_page = int(parts[3])
+
+        user_doc = users_col.find_one({"_id": target_uid})
+        if user_doc:
+            curr_ban = user_doc.get("banned", False)
+            new_ban = not curr_ban
+            users_col.update_one({"_id": target_uid}, {"$set": {"banned": new_ban}})
+            st_text = "ব্যান (Block)" if new_ban else "আনব্যান (Unblock)"
+            try:
+                bot.answer_callback_query(call.id, f"✅ ইউজার {target_uid} সফলভাবে {st_text} করা হয়েছে!", show_alert=False)
+            except Exception:
+                pass
+
+        render_user_manager_page(ADMIN_ID, call.message.message_id, target_page)
+
     # --- ADMIN DASHBOARD & MATCH ROUTING ---
     elif code.startswith("dash_dt_") and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         selected_date = code.replace("dash_dt_", "")
         
         cats = ["fb_cookie", "fb_2fa", "ig_cookie", "ig_2fa"]
         cat_names = {"fb_cookie": "📄 FB Cookies", "fb_2fa": "🔐 FB 2FA", "ig_cookie": "📷 IG Cookies", "ig_2fa": "🔐 IG 2FA"}
         
-        out = f"📊 <b>[ {selected_date} তারিখের বিস্তারিত লাইভ স্ট্যাটাস ]</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        out = (
+            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃  📊 BATCH REPORT // {selected_date:<15}┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+        )
         
         total_date_hold = 0
-        total_date_approved = 0
         
         for c in cats:
             base_q = build_date_query(selected_date)
@@ -482,21 +717,15 @@ def _process_callbacks(call):
             rej_c = submissions_col.count_documents(rej_q)
             tot = hold_c + appr_c + rej_c
             
-            p_bar = make_progress_bar(appr_c + rej_c, tot)
-            st_icon = "⏳ [রিপোর্ট বাকি]" if hold_c > 0 else "✅ [কমপ্লিট & পেমেন্ট ডান]"
-            
-            out += (
-                f"<b>{cat_names[c]}:</b>\n"
-                f"  • প্রোগ্রেস : <code>[{p_bar}]</code>\n"
-                f"  • পেন্ডিং (Hold) : <b>{hold_c} টি</b>\n"
-                f"  • সম্পন্ন (Done)  : <b>{appr_c + rej_c} টি</b> (✅{appr_c} / ❌{rej_c})\n"
-                f"  • স্ট্যাটাস      : {st_icon}\n\n"
-            )
+            p_bar = make_progress_bar(appr_c + rej_c, tot, length=8)
+            out += f"┃ <b>{cat_names[c]}</b> : [{p_bar}] (⏳{hold_c} / ✅{appr_c})\n"
             total_date_hold += hold_c
-            total_date_approved += appr_c
 
-        out += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        out += f"📌 <b>সর্বমোট বাকি পেন্ডিং:</b> <code>{total_date_hold}</code> টি\n"
+        out += (
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ 📌 TOTAL PENDING HOLD : <code>{total_date_hold:<10}</code>┃\n"
+            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+        )
         
         markup = InlineKeyboardMarkup(row_width=2)
         if total_date_hold > 0:
@@ -509,6 +738,8 @@ def _process_callbacks(call):
         bot.send_message(ADMIN_ID, out, reply_markup=markup)
 
     elif code.startswith("force_close_") and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         target_date = code.replace("force_close_", "")
         stuck_q = build_date_query(target_date, "Hold")
         stuck_subs = list(submissions_col.find(stuck_q))
@@ -520,14 +751,34 @@ def _process_callbacks(call):
             try: bot.send_message(sub["chat_id"], f"⚠️ <b>{target_date}</b> এর ঝুলে থাকা আইডিটি (<code>{sub['uid']}</code>) এডমিন কর্তৃক ক্লিয়ার করে রিজেক্ট করা হয়েছে।")
             except Exception: pass
             
-        bot.send_message(ADMIN_ID, f"🔒 <b>{target_date}</b> তারিখের অবশিষ্ট {len(stuck_subs)} টি ঝুলে থাকা কাজ ফোর্স ক্লোজ করা হয়েছে! এখন এটি স্বয়ংক্রিয়ভাবে হাইড হয়ে যাবে।")
+        bot.send_message(ADMIN_ID, f"🔒 <b>{target_date}</b> তারিখের অবশিষ্ট {len(stuck_subs)} টি ঝুলে থাকা কাজ ফোর্স ক্লোজ করা হয়েছে!")
 
     elif code.startswith("bm_select_date_") and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         target_date = code.replace("bm_select_date_", "")
-        user_states[ADMIN_ID] = {'step': 'AWAITING_BUYER_REPORT', 'target_date': target_date}
-        bot.send_message(ADMIN_ID, f"📄 <b>[{target_date}]</b> তারিখের বায়ার রিপোর্ট ফাইলটি (Excel / CSV / Text) সেন্ড করুন:\n<i>(শুধুমাত্র এই তারিখের পেন্ডিং আইডি প্রসেস করা হবে)</i>", reply_markup=cancel_keyboard())
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("📄 FB Cookies", callback_data=f"bm_cat_{target_date}_fb_cookie"),
+            InlineKeyboardButton("🔐 FB 2FA", callback_data=f"bm_cat_{target_date}_fb_2fa"),
+            InlineKeyboardButton("📷 IG Cookies", callback_data=f"bm_cat_{target_date}_ig_cookie"),
+            InlineKeyboardButton("🔐 IG 2FA", callback_data=f"bm_cat_{target_date}_ig_2fa"),
+            InlineKeyboardButton("🌐 সব ক্যাটাগরি একসাথে", callback_data=f"bm_cat_{target_date}_ALL")
+        )
+        bot.send_message(ADMIN_ID, f"🤖 <b>[{target_date}]</b> তারিখের কোন ক্যাটাগরির বায়ার রিপোর্ট মেলাবেন?", reply_markup=markup)
+
+    elif code.startswith("bm_cat_") and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        parts = code.split("_")
+        target_date = parts[2]
+        cat_key = "_".join(parts[3:])
+        user_states[ADMIN_ID] = {'step': 'AWAITING_BUYER_REPORT', 'target_date': target_date, 'target_cat': cat_key}
+        bot.send_message(ADMIN_ID, f"📄 <b>[{target_date} | {cat_key}]</b> এর বায়ার রিপোর্ট ফাইলটি (Excel / CSV / Text) সেন্ড করুন:", reply_markup=cancel_keyboard())
 
     elif code.startswith("exp_select_date_") and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         target_date = code.replace("exp_select_date_", "")
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -540,6 +791,8 @@ def _process_callbacks(call):
         bot.send_message(ADMIN_ID, f"📂 <b>[{target_date}]</b> তারিখের কোন ক্যাটাগরির ডাটা এক্সপোর্ট করবেন?", reply_markup=markup)
 
     elif code.startswith("exp_final_") and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         parts = code.split("_")
         target_date = parts[2]
         cat_key = "_".join(parts[3:])
@@ -563,6 +816,8 @@ def _process_callbacks(call):
         bot.send_document(ADMIN_ID, (f"{filename}.xlsx", buf), caption=f"📊 <b>[{target_date}]</b> এক্সপোর্ট প্রস্তুত!\nক্যাটাগরি: <code>{cat_key}</code>\nমোট আইডি: {len(records)} টি")
 
     elif code == "appr_all_pending" and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         pending_subs = list(submissions_col.find({"status": "Hold"}))
         if not pending_subs: return bot.send_message(ADMIN_ID, "📭 এপ্রুভ করার মতো কোনো পেন্ডিং কাজ নেই!")
         submissions_col.update_many({"status": "Hold"}, {"$set": {"status": "Approved"}})
@@ -575,6 +830,8 @@ def _process_callbacks(call):
 
     elif code.startswith("appr_") and not code == "appr_all_pending":
         if chat_id != ADMIN_ID: return
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         track_id = code.replace("appr_", "")
         sub = submissions_col.find_one({"track_id": track_id})
         if sub and sub.get("status") == "Hold":
@@ -587,6 +844,8 @@ def _process_callbacks(call):
 
     elif code.startswith("rej_"):
         if chat_id != ADMIN_ID: return
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         track_id = code.replace("rej_", "")
         sub = submissions_col.find_one({"track_id": track_id})
         if sub and sub.get("status") == "Hold":
@@ -598,13 +857,17 @@ def _process_callbacks(call):
             except Exception: pass
 
     elif code.startswith("edit_sub_"):
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         track_id = code.replace("edit_sub_", "")
         sub = submissions_col.find_one({"track_id": track_id, "chat_id": chat_id, "status": "Hold"})
         if not sub: return bot.send_message(chat_id, "⚠️ এই কাজটির এডিট মেয়াদ শেষ হয়ে গেছে বা ইতিমধ্যেই প্রসেস করা হয়েছে।")
         user_states[chat_id] = {'step': 'AWAITING_EDIT_PAYLOAD', 'track_id': track_id}
-        bot.send_message(chat_id, f"✏️ <b>Track ID: {track_id}</b> এর জন্য সঠিক Cookies বা 2FA Key এখানে পেস্ট করুন:", reply_markup=cancel_keyboard())
+        bot.send_message(chat_id, f"✏️ <b>Track ID: {track_id}</b> এর জন্য সঠিক Cookies বা 2FA Key পেস্ট করুন:", reply_markup=cancel_keyboard())
 
     elif code.startswith("check_otp_"):
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         email = code.replace("check_otp_", "")
         user_name, domain = email.split("@")
         try:
@@ -616,35 +879,12 @@ def _process_callbacks(call):
                 body = msg_detail.get('textBody', '')
                 otp_match = re.search(r'\b(\d{5,6})\b', body)
                 otp_code = otp_match.group(1) if otp_match else "কোড পাওয়া যায়নি"
-                bot.send_message(chat_id, f"✉️ <b>OTP/Message Received!</b>\n\n🔑 Code: <code>{otp_code}</code>\n\n📄 <b>Message:</b>\n{sanitize_html(body[:300])}")
+                bot.send_message(chat_id, f"✉️ <b>OTP Received!</b>\n🔑 Code: <code>{otp_code}</code>\n\n📄 <b>Msg:</b> {sanitize_html(body[:300])}")
         except Exception: bot.send_message(chat_id, "⚠️ ওটিপি চেক করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।")
 
-    elif code.startswith("gen_names_"):
-        cat = code.replace("gen_names_", "")
-        names_db = {
-            "bd_male": ["Sakib Hasan", "Tanvir Ahmed", "Rahim Uddin", "Rakibul Islam", "Nayeem Khan"],
-            "bd_female": ["Nusrat Jahan", "Riya Sultana", "Sadia Islam", "Farhana Akter", "Mim Chowdhury"],
-            "usa_male": ["James Smith", "John Johnson", "Robert Williams", "Michael Brown", "William Jones"],
-            "usa_female": ["Mary Smith", "Patricia Johnson", "Jennifer Williams", "Linda Brown"]
-        }
-        selected = names_db.get(cat, names_db["bd_male"])
-        out = f"👤 <b>১-ক্লিক কপি করার নাম তালিকা:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        for name in selected: out += f"<code>{name}</code>\n"
-        bot.send_message(chat_id, out)
-
-    elif code.startswith("gen_ua_"):
-        cat = code.replace("gen_ua_", "")
-        ua_db = {
-            "android": ["Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36"],
-            "iphone": ["Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"],
-            "pc": ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"]
-        }
-        selected = ua_db.get(cat, ua_db["android"])
-        out = "📱 <b>কপি করার জন্য User-Agent স্ট্রিং:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        for ua in selected: out += f"<code>{ua}</code>\n\n"
-        bot.send_message(chat_id, out)
-
     elif code.startswith("lb_"):
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         tf = code.replace("lb_", "")
         now = get_bd_time()
         if tf == "daily": query = {"date_str": {"$regex": f"^{now.strftime('%Y-%m-%d')}"}}; title = "আজকের সেরা"
@@ -653,27 +893,40 @@ def _process_callbacks(call):
 
         pipeline = [{"$match": query}, {"$group": {"_id": "$worker_name", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}, {"$limit": 10}]
         top = list(submissions_col.aggregate(pipeline))
-        out = f"🏆 <b>লিডারবোর্ড - {title}</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        
+        out = (
+            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃  🏆 LEADERBOARD // {title:<17}┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+        )
         badges = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-        for i, item in enumerate(top): out += f"{badges[i]} <b>{sanitize_html(item['_id'])}</b> — {item['count']} টি\n"
+        for i, item in enumerate(top): out += f"┃ {badges[i]} <b>{sanitize_html(item['_id'])}</b> — {item['count']} টি\n"
         
         user_cnt = submissions_col.count_documents({"chat_id": chat_id})
-        out += f"\n🎯 <b>আপনার মোট জমা:</b> <code>{user_cnt}</code> টি"
+        out += (
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ 🎯 YOUR TOTAL SUBMISSIONS : <code>{user_cnt:<7}</code> ┃\n"
+            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+        )
         markup = InlineKeyboardMarkup(row_width=3)
         markup.add(InlineKeyboardButton("📅 আজকের সেরা", callback_data="lb_daily"), InlineKeyboardButton("🗓️ এই সপ্তাহের সেরা", callback_data="lb_weekly"), InlineKeyboardButton("🏆 সর্বকালের সেরা", callback_data="lb_alltime"))
         bot.edit_message_text(out, chat_id, call.message.message_id, reply_markup=markup)
 
     elif code.startswith("surge_") and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         act = code.replace("surge_", "")
         if act == "off":
             update_setting("surge_pricing", {"active": False, "bonus": 0.0, "expires_at": None})
-            bot.send_message(ADMIN_ID, "🛑 <b>সার্জ বোনাস সফলভাবে বন্ধ করা হয়েছে।</b>")
+            bot.send_message(ADMIN_ID, "🛑 <b>সার্জ বোনাস বন্ধ করা হয়েছে।</b>")
         else:
             hrs = int(act)
             update_setting("surge_pricing", {"active": True, "bonus": 2.0, "expires_at": get_bd_time() + timedelta(hours=hrs)})
             bot.send_message(ADMIN_ID, f"⚡ <b>+৳২.০০ সার্জ বোনাস {hrs} ঘণ্টার জন্য চালু করা হয়েছে!</b>")
 
     elif code.startswith("rate_edit_") and chat_id == ADMIN_ID:
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
         cat_key = code.replace("rate_edit_", "")
         user_states[chat_id] = {'step': 'AWAITING_NEW_RATE', 'category_key': cat_key}
         bot.send_message(ADMIN_ID, f"✏️ <b>{cat_key}</b> এর নতুন মূল্য লিখুন (যেমন: 6.5):", reply_markup=cancel_keyboard())
@@ -695,9 +948,10 @@ def _process_document(message):
     if is_user_banned(chat_id): return
     state = user_states.get(chat_id)
     
-    # Target-Date Buyer Report Auto-Matcher
+    # Target-Date & Category Isolated Buyer Report Auto-Matcher
     if state and state.get('step') == 'AWAITING_BUYER_REPORT' and chat_id == ADMIN_ID:
         target_date = state.get('target_date', 'ALL')
+        target_cat = state.get('target_cat', 'ALL')
         user_states.pop(chat_id, None)
         
         file_info = bot.get_file(message.document.file_id)
@@ -705,20 +959,31 @@ def _process_document(message):
         filename = message.document.file_name.lower()
         extracted_uids = set()
         
-        if filename.endswith(".csv"): extracted_uids = set(pd.read_csv(io.BytesIO(downloaded)).astype(str).values.flatten())
-        elif filename.endswith(".xlsx"): extracted_uids = set(pd.read_excel(io.BytesIO(downloaded)).astype(str).values.flatten())
-        else: extracted_uids = set(re.findall(r'\b\d{8,20}\b', downloaded.decode('utf-8', errors='ignore')))
+        if filename.endswith(".csv"): 
+            df_raw = pd.read_csv(io.BytesIO(downloaded), dtype=str)
+            extracted_uids = set(df_raw.astype(str).values.flatten())
+        elif filename.endswith(".xlsx"): 
+            df_raw = pd.read_excel(io.BytesIO(downloaded), dtype=str)
+            extracted_uids = set(df_raw.astype(str).values.flatten())
+        else: 
+            extracted_uids = set(re.findall(r'\b\d{8,20}\b', downloaded.decode('utf-8', errors='ignore')))
             
-        cleaned_uids = {u.strip() for u in extracted_uids if u.strip().isdigit()}
+        cleaned_uids = set()
+        for u in extracted_uids:
+            clean_u = str(u).strip().split('.')[0]
+            if clean_u.isdigit():
+                cleaned_uids.add(clean_u)
         
-        # Build query strictly targeting target_date
         query = build_date_query(target_date, "Hold")
+        if target_cat != "ALL":
+            query["category_key"] = target_cat
         
         pending_subs = list(submissions_col.find(query))
         if not pending_subs:
-            return bot.send_message(ADMIN_ID, f"📭 <b>[{target_date}]</b> তারিখের কোনো পেন্ডিং কাজ খুঁজে পাওয়া যায়নি!", reply_markup=admin_bottom_keyboard())
+            return bot.send_message(ADMIN_ID, f"📭 <b>[{target_date} | {target_cat}]</b> এর কোনো পেন্ডিং কাজ খুঁজে পাওয়া যায়নি!", reply_markup=admin_bottom_keyboard())
 
         appr, rej, payout = 0, 0, 0.0
+        notifications = []
         
         for sub in pending_subs:
             uid = str(sub.get("uid", "")).strip()
@@ -727,49 +992,69 @@ def _process_document(message):
                 submissions_col.update_one({"_id": sub["_id"]}, {"$set": {"status": "Approved"}})
                 users_col.update_one({"_id": sub["chat_id"]}, {"$inc": {"balance": amt, "hold_balance": -amt}})
                 appr += 1; payout += amt
-                try: bot.send_message(sub["chat_id"], f"✅ বায়ার রিপোর্টে আপনার আইডি (<code>{uid}</code>) এপ্রুভ হয়েছে! ৳{amt} যোগ হয়েছে।")
-                except Exception: pass
+                notifications.append((sub["chat_id"], f"✅ বায়ার রিপোর্টে আপনার আইডি (<code>{uid}</code>) এপ্রুভ হয়েছে! ৳{amt} যোগ হয়েছে।"))
             else:
                 submissions_col.update_one({"_id": sub["_id"]}, {"$set": {"status": "Rejected"}})
                 users_col.update_one({"_id": sub["chat_id"]}, {"$inc": {"hold_balance": -amt}})
                 rej += 1
-                try: bot.send_message(sub["chat_id"], f"❌ বায়ার রিপোর্টে আপনার আইডি (<code>{uid}</code>) রিজেক্টেড।")
-                except Exception: pass
+                notifications.append((sub["chat_id"], f"❌ বায়ার রিপোর্টে আপনার আইডি (<code>{uid}</code>) রিজেক্টেড।"))
                 
+        def send_async_notifications(notification_list):
+            for worker_id, text_msg in notification_list:
+                try:
+                    bot.send_message(worker_id, text_msg)
+                    time.sleep(0.04)
+                except Exception:
+                    pass
+
+        threading.Thread(target=send_async_notifications, args=(notifications,), daemon=True).start()
+
         return bot.send_message(
             ADMIN_ID, 
             f"🤖 <b>[BUYER REPORT MATCH COMPLETE]</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📅 টার্গেটেড তারিখ : <b>{target_date}</b>\n"
-            f"📊 মোট প্রসেস    : <b>{len(pending_subs)} টি</b>\n"
-            f"✅ এপ্রুভড       : <b>{appr} টি</b> (৳{payout:.2f})\n"
-            f"❌ রিজেক্টেড     : <b>{rej} টি</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"ℹ️ <i>অন্যান্য দিনের হোল্ড ডাটা সম্পূর্ণ নিরাপদ রয়েছে।</i>", 
+            f"📅 তারিখ: <b>{target_date}</b> | 📁 ক্যাটাগরি: <b>{target_cat}</b>\n"
+            f"✅ এপ্রুভড: <b>{appr} টি</b> (৳{payout:.2f}) | ❌ রিজেক্টেড: <b>{rej} টি</b>", 
             reply_markup=admin_bottom_keyboard()
         )
 
-    # Worker Excel Submission
+    # Worker Excel Submission (WITH STRICT PASSWORD RULE VALIDATION GUARD)
     if state and state.get('step') == 'AWAITING_EXCEL_FILE':
-        user_states.pop(chat_id, None)
-        file_info = bot.get_file(message.document.file_id)
-        file_name = message.document.file_name
-        with open(file_name, 'wb') as f: f.write(bot.download_file(file_info.file_path))
-
-        df = pd.read_csv(file_name, dtype=str) if file_name.endswith('.csv') else pd.read_excel(file_name, dtype=str)
-        df = df.fillna('')
-        success_count, total_earned = 0, 0.0
-        now_time = get_bd_time()
-        now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
-        date_key = now_time.strftime("%Y-%m-%d")
-        
         user = get_user_data(chat_id)
         saved_pass = user.get("custom_password")
-        default_pass = saved_pass if (saved_pass and str(saved_pass).strip() != "" and str(saved_pass).lower() != "none") else get_setting("pass_rule", "20")
+        p_rule = str(get_setting("pass_rule", "")).strip()
+
+        password_to_use = saved_pass if (saved_pass and str(saved_pass).strip() != "" and str(saved_pass).lower() != "none") else p_rule
+
+        # Strict validation check against current admin pass rule
+        if p_rule and p_rule.lower() != "none" and p_rule not in password_to_use:
+            return bot.reply_to(
+                message, 
+                f"❌ <b>জমা বাতিল করা হয়েছে!</b>\n"
+                f"আপনার সেভ করা পাসওয়ার্ডে আজকের নিয়ম (<code>{sanitize_html(p_rule)}</code>) নেই।\n"
+                f"দয়া করে আগে <b>'⚙️ পাসওয়ার্ড নিয়ম'</b> সেকশন থেকে আজকের নিয়ম মেনে নতুন পাসওয়ার্ড সেভ করুন।", 
+                reply_markup=submit_tasks_keyboard()
+            )
+
+        user_states.pop(chat_id, None)
+        file_info = bot.get_file(message.document.file_id)
+        orig_file_name = message.document.file_name
+        
+        now_time = get_bd_time()
+        unique_file_name = f"user_{chat_id}_{int(now_time.timestamp())}_{orig_file_name}"
+        file_downloaded_bytes = bot.download_file(file_info.file_path)
+        
+        with open(unique_file_name, 'wb') as f: f.write(file_downloaded_bytes)
+
+        df = pd.read_csv(unique_file_name, dtype=str) if unique_file_name.endswith('.csv') else pd.read_excel(unique_file_name, dtype=str)
+        df = df.fillna('')
+        success_count, total_earned = 0, 0.0
+        now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
+        date_key = now_time.strftime("%Y-%m-%d")
 
         for _, row in df.iterrows():
             vals = [str(x).strip() for x in row.values]
-            uid, password, payload = None, default_pass, None
+            uid, password, payload = None, password_to_use, None
             for v in vals:
                 if not uid and extract_numeric_uid(v): uid = extract_numeric_uid(v)
                 elif is_valid_cookies(v) or len(v) > 20: payload = v
@@ -778,6 +1063,7 @@ def _process_document(message):
                 p_hash = generate_payload_hash(payload)
                 if is_payload_blacklisted(p_hash): continue
                 cat_key = "fb_cookie" if is_valid_cookies(payload) else "fb_2fa"
+                cat_display = CAT_MAP.get(cat_key, "FB Cookies")
                 rate = float(get_current_task_rate(cat_key))
                 track_id = generate_tracking_id()
 
@@ -785,7 +1071,7 @@ def _process_document(message):
                 submissions_col.insert_one({
                     "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
                     "password": password, "payload": payload, "payload_hash": p_hash, "track_id": track_id,
-                    "category": "FB Cookies" if "cookie" in cat_key else "FB 2FA", "category_key": cat_key,
+                    "category": cat_display, "category_key": cat_key,
                     "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
                 })
                 success_count += 1; total_earned += rate
@@ -793,21 +1079,26 @@ def _process_document(message):
                 try:
                     bot.send_message(
                         LOG_CHANNEL_ID,
-                        f"📥 <b>NEW SUBMISSION (Excel)</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 Track: <code>{track_id}</code>\n"
-                        f"👤 Worker: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
-                        f"🆔 UID: <code>{uid}</code>\n"
-                        f"📁 Cat: <b>FB Cookies/2FA</b>\n"
-                        f"💰 Rate: ৳{rate:.2f}"
+                        f"📥 <b>NEW SUBMISSION (Excel)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}"
                     )
                 except Exception: pass
 
-        if os.path.exists(file_name): os.remove(file_name)
-        users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
-        return bot.reply_to(message, f"🎉 <b>ফাইল প্রসেস সম্পন্ন!</b>\n\n✅ সফল: <b>{success_count}</b> টি\n💰 আর্ন (হোল্ড): ৳{total_earned:.2f}", reply_markup=submit_tasks_keyboard())
+        # AUTOMATIC PRIVATE BACKUP CHANNEL DELIVERY
+        backup_file_buf = io.BytesIO(file_downloaded_bytes)
+        send_private_backup_message(
+            f"📊 <b>[PRIVATE BACKUP - Excel Submission]</b>\n"
+            f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
+            f"📁 File: <code>{sanitize_html(orig_file_name)}</code> | 🔑 Pass: <code>{sanitize_html(password_to_use)}</code>\n"
+            f"✅ Valid: <b>{success_count}</b> টি | 💰 Hold: ৳{total_earned:.2f}",
+            doc_buf=backup_file_buf,
+            doc_name=f"Backup_{date_key}_{orig_file_name}"
+        )
 
-# --- MAIN TEXT ROUTER ---
+        if os.path.exists(unique_file_name): os.remove(unique_file_name)
+        users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
+        return bot.reply_to(message, f"🎉 <b>ফাইল প্রসেস সম্পন্ন!</b>\n✅ সফল: <b>{success_count}</b> টি | 💰 আর্ন (হোল্ড): ৳{total_earned:.2f}", reply_markup=submit_tasks_keyboard())
+
+# --- MAIN TEXT ROUTER (WITH STICKY STATE LOCKING & PRIVATE BACKUP) ---
 @bot.message_handler(content_types=['text', 'photo', 'video', 'animation'])
 def main_router(message):
     try: _process_main_router(message)
@@ -828,52 +1119,96 @@ def _process_main_router(message):
     user = get_user_data(chat_id)
 
     nav_buttons = [
-        "🏠 প্রধান মেনু", "🔙 প্রধান মেনু", "❌ বাতিল করুন", "💼 টাস্ক ও টুলস", "📋 কাজ জমা দিন", "🛠 হেল্পার টুলস", 
-        "📌 সিঙ্গেল জমা", "👤 আমার অ্যাকাউন্ট", "🎁 বোনাস ও সাপোর্ট", "👑 এডমিন প্যানেল", "💳 Withdraw", 
+        "🏠 মেইন মেনু", "🏠 প্রধান মেনু", "🔙 প্রধান মেনু", "🔙 পেছনে যান", "❌ বাতিল করুন", "⚡ কাজ জমা সেন্টার", "💼 টাস্ক ও টুলস", "📋 কাজ জমা দিন", "🛠 হেল্পার টুলস", 
+        "📌 সিঙ্গেল জমা", "👤 প্রোফাইল ও ওয়ালেট", "👤 আমার অ্যাকাউন্ট", "🎁 রিওয়ার্ড ও সাপোর্ট", "🎁 বোনাস ও সাপোর্ট", "👑 এডমিন কন্ট্রোল সেন্টার", "👑 এডমিন প্যানেল", "💳 Withdraw", 
         "🪪 ভেরিফাইড আইডি কার্ড", "🎁 Claim Daily Bonus", "🏆 লিডারবোর্ড", "💬 এডমিন সাপোর্ট টিকিট", 
         "📦 বাল্ক জমা (Text)", "📊 এক্সেল ফাইল জমা", "⚙️ পাসওয়ার্ড নিয়ম", "🔑 2FA কোড জেনারেটর", 
-        "🚀 বাল্ক FB লাইভ চেকার", "🚀 বাল্ক IG লাইভ চেকার", "✉️ টেম্প ইমেইল", "👤 র্যান্ডম নাম জেনারেটর", 
-        "📜 কাজের ইতিহাস", "📱 ইউজার-এজেন্ট", "👤 ইউজার ম্যানেজার", "🤖 বায়ার রিপোর্ট অটো-ম্যাচার", 
-        "🧠 AI সিটেডেল অডিট", "📢 ব্রডকাস্ট নোটিশ", "⚙️ সেট রেট ও চার্জ", 
+        "🚀 বাল্ক FB লাইভ চেকার", "🚀 বাল্ক IG লাইভ চেকার", "✉️ টেম্প ইমেইল", "👤 র্যান্ডম প্রোফাইল জেনারেটর", 
+        "📜 কাজের ইতিহাস", "👤 ইউজার ম্যানেজার", "🤖 বায়ার রিপোর্ট অটো-ম্যাচার", 
+        "🧠 AI সিটেডেল অডিট", "📢 ব্রডকাস্ট নোটিশ", "⚙️ সেট রেট ও চার্জ", "🔑 পাসওয়ার্ড নিয়ম সেট",
         "📊 স্মার্ট ড্যাশবোর্ড ও রিপোর্ট", "📂 স্মার্ট ফাইল এক্সপোর্ট", "🏛️ আর্কাইভ ও বন্ধ ফাইল", "⏳ ম্যানুয়াল পেন্ডিং চেক",
         "🔙 টাস্ক মেনুতে ফিরুন", "🔙 কাজ জমা মেনুতে ফিরুন"
     ]
 
     current_state = user_states.get(chat_id, {}).copy()
 
+    # Clear state ONLY if explicit navigation button is pressed
     if text in nav_buttons or text.startswith("🛠 মেইনটেনেন্স:"):
         user_states.pop(chat_id, None)
 
+    # --- MULTI-LEVEL BACK CANCEL NAVIGATION ---
     if text == "❌ বাতিল করুন":
         step = current_state.get('step')
-        if step in ['AWAITING_UID', 'AWAITING_SINGLE_DATA', 'AWAITING_MANUAL_PASSWORD', 'AWAITING_BULK_TEXT', 'AWAITING_EXCEL_FILE']:
-            return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে কাজ জমা মেনুতে ফিরে আসা হয়েছে।", reply_markup=submit_tasks_keyboard())
+        if step in ['AWAITING_UID', 'AWAITING_SINGLE_DATA', 'AWAITING_MANUAL_PASSWORD', 'AWAITING_BULK_TEXT', 'AWAITING_EXCEL_FILE', 'AWAITING_USER_SET_PASS']:
+            return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে 'কাজ জমা' মেনুতে ফিরে আসা হয়েছে।", reply_markup=submit_tasks_keyboard())
         elif step in ['AWAITING_2FA_GEN', 'AWAITING_BULK_FB_CHECK', 'AWAITING_BULK_IG_CHECK']:
-            return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে টুলস মেনুতে ফিরে আসা হয়েছে।", reply_markup=helper_tools_keyboard())
+            return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে 'টুলস' মেনুতে ফিরে আসা হয়েছে।", reply_markup=helper_tools_keyboard())
         elif step == 'AWAITING_WITHDRAW_DETAILS':
             return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করা হয়েছে।", reply_markup=account_keyboard())
+        elif step in ['AWAITING_BROADCAST_MSG', 'AWAITING_BUYER_REPORT', 'AWAITING_NEW_RATE', 'AWAITING_ADMIN_PASS_RULE']:
+            return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে এডমিন প্যানেলে ফিরে আসা হয়েছে।", reply_markup=admin_bottom_keyboard())
+        elif step == 'AWAITING_SUPPORT_MSG':
+            return bot.send_message(chat_id, "❌ টিকিট প্রক্রিয়া বাতিল করা হয়েছে।", reply_markup=bonus_support_keyboard())
         elif step == 'AWAITING_EDIT_PAYLOAD':
             return bot.send_message(chat_id, "❌ এডিট বাতিল করা হয়েছে।", reply_markup=tasks_and_tools_keyboard())
         else:
             return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে প্রধান মেনুতে ফিরে আসা হয়েছে।", reply_markup=main_bottom_keyboard(chat_id))
 
-    # Static Navigations
-    if text in ["🏠 প্রধান মেনু", "🔙 প্রধান মেনু"]: return bot.send_message(chat_id, "🏠 <b>প্রধান মেনু:</b>", reply_markup=main_bottom_keyboard(chat_id))
-    elif text in ["🔙 টাস্ক মেনুতে ফিরুন", "💼 টাস্ক ও টুলস"]: return bot.send_message(chat_id, "💼 <b>টাস্ক ও টুলস সেকশনে স্বাগতম:</b>", reply_markup=tasks_and_tools_keyboard())
-    elif text in ["🔙 কাজ জমা মেনুতে ফিরুন", "📋 কাজ জমা দিন"]: return bot.send_message(chat_id, "📋 <b>কাজ জমা দেওয়ার ধরণ বেছে নিন:</b>", reply_markup=submit_tasks_keyboard())
+    # --- STATIC CYBER NAVIGATIONS (LEVEL 1 & LEVEL 2) ---
+    if text in ["🏠 মেইন মেনু", "🏠 প্রধান মেনু", "🔙 প্রধান মেনু"]:
+        fname = sanitize_html(message.from_user.first_name)
+        bal = float(user.get("balance") or 0.0)
+        hold_bal = float(user.get("hold_balance") or 0.0)
+
+        welcome_card = (
+            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃  ❖ OEB NEXUS // CYBER CORE v5.0     ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ 👤 OPERATOR : <code>{fname[:18]}</code>\n"
+            f"┃ 🆔 USER ID  : <code>#{chat_id}</code>\n"
+            f"┃                                      ┃\n"
+            f"┃ 💳 WALLET   : <code>৳ {bal:<10.2f} BDT</code>\n"
+            f"┃ ⏳ ESCROW   : <code>৳ {hold_bal:<10.2f} BDT</code>\n"
+            f"┃ 🛡 STATUS   : 🟢 <code>ACTIVE STAFF</code>        ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ ⚡ SYSTEM STATUS : ONLINE // 256-BIT  ┃\n"
+            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
+            f"  ► <i>কাজের জন্য নিচের টার্মিনাল বাটন ব্যবহার করুন:</i>"
+        )
+        return bot.send_message(chat_id, welcome_card, reply_markup=main_bottom_keyboard(chat_id))
+
+    elif text in ["⚡ কাজ জমা সেন্টার", "🔙 টাস্ক মেনুতে ফিরুন", "💼 টাস্ক ও টুলস", "🔙 পেছনে যান"]:
+        return bot.send_message(chat_id, "📋 <b>কাজ জমা দেওয়ার ধরণ বেছে নিন:</b>", reply_markup=submit_tasks_keyboard())
+    elif text in ["📋 কাজ জমা দিন"]: return bot.send_message(chat_id, "📋 <b>কাজ জমা দেওয়ার ধরণ বেছে নিন:</b>", reply_markup=submit_tasks_keyboard())
     
     elif text == "🛠 হেল্পার টুলস": return bot.send_message(chat_id, "🛠 <b>আপনার প্রয়োজনীয় টুল বেছে নিন:</b>", reply_markup=helper_tools_keyboard())
     elif text == "📌 সিঙ্গেল জমা": return bot.send_message(chat_id, "📌 <b>ক্যাটাগরি বেছে নিন:</b>", reply_markup=category_bottom_keyboard())
     
-    elif text == "👤 আমার অ্যাকাউন্ট":
+    elif text in ["👤 প্রোফাইল ও ওয়ালেট", "👤 আমার অ্যাকাউন্ট"]:
         cnt = submissions_col.count_documents({"chat_id": chat_id})
         bal = float(user.get("balance") or 0.0)
         hold_bal = float(user.get("hold_balance") or 0.0)
         safe_name = sanitize_html(message.from_user.first_name)
-        msg_str = f"👤 <b>নাম:</b> <code>{safe_name}</code>\n📊 <b>মোট কাজ:</b> <code>{cnt}</code> টি\n💰 <b>মেইন ব্যালেন্স:</b> <code>৳{bal:.2f}</code>\n⏳ <b>এসক্রো হোল্ড:</b> <code>৳{hold_bal:.2f}</code>\n🔗 <b>রেফারেল লিঙ্ক:</b> https://t.me/{BOT_USERNAME}?start={chat_id}"
-        return bot.send_message(chat_id, msg_str, reply_markup=account_keyboard())
-    elif text == "🎁 বোনাস ও সাপোর্ট": return bot.send_message(chat_id, "🎁 <b>বোনাস ও সাপোর্ট সেন্টার:</b>", reply_markup=bonus_support_keyboard())
-    elif text == "👑 এডমিন প্যানেল" and chat_id == ADMIN_ID: return bot.send_message(chat_id, "👑 <b>এডমিন প্যানেল</b>\nসবকটি নতুন ফিচার ও স্মার্ট ফিল্টার চালু রয়েছে।", reply_markup=admin_bottom_keyboard())
+        
+        prof_card = (
+            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃  👤 USER PROFILE // WALLET TERMINAL  ┃\n"
+            f"
+            f"┃ 👤 NAME   : <code>{safe_name[:18]}</code>\n"
+            f"┃ 📊 TASKS  : <code>{cnt:<10}</code> TIS         ┃\n"
+            f"┃ 💰 MAIN   : <code>৳ {bal:<10.2f} BDT</code>    ┃\n"
+            f"┃ ⏳ HOLD   : <code>৳ {hold_bal:<10.2f} BDT</code>    ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ 🔗 REF LINK : https://t.me/{BOT_USERNAME}?start={chat_id}\n"
+            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+        )
+        return bot.send_message(chat_id, prof_card, reply_markup=account_keyboard())
+
+    elif text in ["🎁 রিওয়ার্ড ও সাপোর্ট", "🎁 বোনাস ও সাপোর্ট"]:
+        return bot.send_message(chat_id, "🎁 <b>বোনাস ও সাপোর্ট সেন্টার:</b>", reply_markup=bonus_support_keyboard())
+
+    elif text in ["👑 এডমিন কন্ট্রোল সেন্টার", "👑 এডমিন প্যানেল"] and chat_id == ADMIN_ID:
+        return bot.send_message(chat_id, "👑 <b>ADMIN CONTROL CENTER</b>\nসবকটি নতুন সাইবার ফিচার ও ফিল্টার চালু রয়েছে।", reply_markup=admin_bottom_keyboard())
 
     # --- ADVANCED ADMIN DASHBOARDS & EXPORTS ---
     elif text == "📊 স্মার্ট ড্যাশবোর্ড ও রিপোর্ট" and chat_id == ADMIN_ID:
@@ -935,13 +1270,14 @@ def _process_main_router(message):
             if st == "Hold": markup.add(InlineKeyboardButton(f"✏️ এডিট {sub['track_id']}", callback_data=f"edit_sub_{sub['track_id']}"))
         return bot.send_message(chat_id, out, reply_markup=markup)
 
-    elif text == "📱 ইউজার-এজেন্ট":
-        markup = InlineKeyboardMarkup(row_width=1).add(InlineKeyboardButton("📱 Android Chrome", callback_data="gen_ua_android"), InlineKeyboardButton("🍎 iPhone Safari", callback_data="gen_ua_iphone"), InlineKeyboardButton("💻 Windows PC Chrome", callback_data="gen_ua_pc"))
-        return bot.send_message(chat_id, "📱 <b>ইউজার-এজেন্ট ক্যাটাগরি বেছে নিন:</b>", reply_markup=markup)
-
-    elif text == "👤 র্যান্ডম নাম জেনারেটর":
-        markup = InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🇧🇩 BD Male", callback_data="gen_names_bd_male"), InlineKeyboardButton("🇧🇩 BD Female", callback_data="gen_names_bd_female"), InlineKeyboardButton("🇺🇸 USA Male", callback_data="gen_names_usa_male"), InlineKeyboardButton("🇺🇸 USA Female", callback_data="gen_names_usa_female"))
-        return bot.send_message(chat_id, "👤 <b>যে ক্যাটাগরির নাম চান সিলেক্ট করুন:</b>", reply_markup=markup)
+    # UNLIMITED PROFILE GENERATOR ROUTE
+    elif text in ["👤 র্যান্ডম নাম জেনারেটর", "👤 র্যান্ডম প্রোফাইল জেনারেটর"]:
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("🇧🇩 BD Profile", callback_data="gen_prof_bd"),
+            InlineKeyboardButton("🇺🇸 USA Profile", callback_data="gen_prof_usa")
+        )
+        return bot.send_message(chat_id, "👤 <b>কোন দেশের প্রোফাইল জেনারেট করতে চান সিলেক্ট করুন:</b>", reply_markup=markup)
 
     elif text == "✉️ টেম্প ইমেইল":
         email = f"{''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8))}@1secmail.com"
@@ -998,6 +1334,11 @@ def _process_main_router(message):
         return bot.send_photo(chat_id, buf, caption="🪪 <b>আপনার ভেরিফাইড আইডি কার্ড!</b>", reply_markup=account_keyboard())
 
     # Admin Settings Routes
+    elif text == "🔑 পাসওয়ার্ড নিয়ম সেট" and chat_id == ADMIN_ID:
+        curr_rule = get_setting("pass_rule", "20")
+        user_states[chat_id] = {'step': 'AWAITING_ADMIN_PASS_RULE'}
+        return bot.send_message(chat_id, f"🔑 <b>আজকের পাসওয়ার্ড নিয়ম/কোড লিখুন:</b>\nবর্তমান নিয়ম: <code>{sanitize_html(curr_rule)}</code>", reply_markup=cancel_keyboard())
+
     elif text.startswith("🛠 মেইনটেনেন্স:") and chat_id == ADMIN_ID:
         current_mode = get_setting("maintenance_mode", False)
         new_mode = not current_mode
@@ -1020,9 +1361,21 @@ def _process_main_router(message):
         rates = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
         surge = get_setting("surge_pricing", {"active": False, "bonus": 0.0})
         st_text = f"⚡ ACTIVE (+৳{surge['bonus']})" if surge.get('active') else "🔴 INACTIVE"
-        msg = f"⚙️ <b>CURRENT RATES & SURGE DASHBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📄 FB Cookie : ৳{rates['fb_cookie']}\n🔐 FB 2FA    : ৳{rates['fb_2fa']}\n📷 IG Cookie : ৳{rates['ig_cookie']}\n🔐 IG 2FA    : ৳{rates['ig_2fa']}\n\n⚡ <b>Surge Status:</b> {st_text}"
+        
+        rate_card = (
+            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃  ⚙️ RATES & SURGE CONTROL TERMINAL   ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ 📄 FB COOKIES : <code>৳ {rates['fb_cookie']:<10.2f} BDT</code>   ┃\n"
+            f"┃ 🔐 FB 2FA     : <code>৳ {rates['fb_2fa']:<10.2f} BDT</code>   ┃\n"
+            f"┃ 📷 IG COOKIES : <code>৳ {rates['ig_cookie']:<10.2f} BDT</code>   ┃\n"
+            f"┃ 🔐 IG 2FA     : <code>৳ {rates['ig_2fa']:<10.2f} BDT</code>   ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ ⚡ SURGE STATUS : {st_text:<18} ┃\n"
+            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+        )
         markup = InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("✏️ FB Cookie", callback_data="rate_edit_fb_cookie"), InlineKeyboardButton("✏️ FB 2FA", callback_data="rate_edit_fb_2fa"), InlineKeyboardButton("✏️ IG Cookie", callback_data="rate_edit_ig_cookie"), InlineKeyboardButton("✏️ IG 2FA", callback_data="rate_edit_ig_2fa")).add(InlineKeyboardButton("⚡ Quick Surge (+৳২)", callback_data="surge_3"), InlineKeyboardButton("🛑 Turn OFF Surge", callback_data="surge_off"))
-        return bot.send_message(ADMIN_ID, msg, reply_markup=markup)
+        return bot.send_message(ADMIN_ID, rate_card, reply_markup=markup)
 
     elif text == "🧠 AI সিটেডেল অডিট" and chat_id == ADMIN_ID:
         logs = list(ai_logs_col.find().sort("timestamp", -1).limit(5))
@@ -1035,12 +1388,9 @@ def _process_main_router(message):
         user_states[chat_id] = {'step': 'AWAITING_BROADCAST_MSG'}
         return bot.send_message(ADMIN_ID, "📢 <b>ব্রডকাস্ট মেসেজটি লিখুন:</b>", reply_markup=cancel_keyboard())
 
+    # DIRECT IN-CHAT USER MANAGER RENDER
     elif text == "👤 ইউজার ম্যানেজার" and chat_id == ADMIN_ID:
-        total_u = users_col.count_documents({})
-        banned_u = users_col.count_documents({"banned": True})
-        msg = f"👥 <b>USER MANAGEMENT DASHBOARD</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 সর্বমোট মেম্বার: <b>{total_u} জন</b>\n🟢 এক্টিভ ইউজার    : <b>{total_u - banned_u} জন</b>\n🔴 ব্যানড ইউজার     : <b>{banned_u} জন</b>"
-        markup = InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🚫 ব্যান করুন", callback_data="admin_ban_user_prompt"), InlineKeyboardButton("🟢 আনব্যান করুন", callback_data="admin_unban_user_prompt"))
-        return bot.send_message(ADMIN_ID, msg, reply_markup=markup)
+        return render_user_manager_page(ADMIN_ID, page=1)
 
     # Job Submission Navigation
     elif text == "📦 বাল্ক জমা (Text)":
@@ -1050,26 +1400,72 @@ def _process_main_router(message):
         user_states[chat_id] = {'step': 'AWAITING_EXCEL_FILE'}
         return bot.send_message(chat_id, "📊 <b>.CSV বা .XLSX ফাইলটি এখানে পাঠালুন:</b>", reply_markup=cancel_keyboard())
     elif text == "⚙️ পাসওয়ার্ড নিয়ম":
-        p_rule = get_setting("pass_rule", "20")
+        p_rule = str(get_setting("pass_rule", "20")).strip()
         custom_p = user.get("custom_password", "")
-        return bot.send_message(chat_id, f"⚙️ <b>পাসওয়ার্ড নিয়মাবলী ও সেটিং:</b>\nআপনার সেভ করা পাসওয়ার্ড: {f'<code>{custom_p}</code>' if (custom_p and str(custom_p).strip() != '' and str(custom_p).lower() != 'none') else '<i>কোনো ডিফল্ট পাসওয়ার্ড সেভ করা নেই</i>'}\n<i>(সিস্টেম অটো রুল: {p_rule})</i>", reply_markup=submit_tasks_keyboard())
+        
+        has_p = (custom_p and str(custom_p).strip() != '' and str(custom_p).lower() != 'none')
+        pass_display = f"<code>{sanitize_html(custom_p)}</code>" if has_p else "<i>কোনো ডিফল্ট পাসওয়ার্ড সেভ করা নেই</i>"
+        
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton("✏️ পাসওয়ার্ড সেট / চেঞ্জ করুন", callback_data="user_set_custom_pass"))
+        if has_p:
+            markup.add(InlineKeyboardButton("🗑️ পাসওয়ার্ড মুছে ফেলুন", callback_data="user_remove_custom_pass"))
+            
+        msg = (
+            f"⚙️ <b>পাসওয়ার্ড নিয়মাবলী ও সেটিং:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔑 <b>আপনার সেভ করা পাসওয়ার্ড:</b> {pass_display}\n"
+            f"📌 <b>আজকের পাসওয়ার্ড নিয়ম/কোড:</b> <code>{sanitize_html(p_rule)}</code>\n\n"
+            f"💡 <i>নোট: আপনি সেভ করার পর যেকোনো জমার সময় এই পাসওয়ার্ডটি অটোমেটিক ব্যবহার হবে। পাসওয়ার্ডের ভেতরে আজকের নিয়ম (<b>{sanitize_html(p_rule)}</b>) থাকা বাধ্যতামূলক!</i>"
+        )
+        return bot.send_message(chat_id, msg, reply_markup=markup)
+
     elif any(text.startswith(p) for p in ["📄 FB Cookies", "🔐 FB 2FA", "📷 IG Cookies", "🔐 IG 2FA"]):
         cat = "fb_cookie"
         if "FB 2FA" in text: cat = "fb_2fa"
         elif "IG Cookies" in text: cat = "ig_cookie"
         elif "IG 2FA" in text: cat = "ig_2fa"
+        
+        rate = float(get_current_task_rate(cat))
+        p_rule = str(get_setting("pass_rule", "20")).strip()
+
+        task_card = (
+            f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+            f"┃  📄 TASK TERMINAL // {text[:15]:<15} ┃\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+            f"┃ 💎 CURRENT RATE : <code>৳ {rate:<10.2f} BDT</code>   ┃\n"
+            f"┃ 🔑 RULE CODE   : <code>{p_rule:<15}</code>┃\n"
+            f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
+            f"  ► <b>UID বা প্রোফাইল লিঙ্ক সেন্ড করুন:</b>"
+        )
         user_states[chat_id] = {'step': 'AWAITING_UID', 'category': cat}
-        return bot.send_message(chat_id, "🆔 <b>UID বা প্রোফাইল লিঙ্ক দিন:</b>", reply_markup=cancel_keyboard())
+        return bot.send_message(chat_id, task_card, reply_markup=cancel_keyboard())
 
     # ================= DYNAMIC STATE PROCESSING =================
     state = user_states.get(chat_id)
     if not state:
-        if message.text: return bot.send_message(chat_id, "নিচের মেনু থেকে সার্ভিস বেছে নিন:", reply_markup=main_bottom_keyboard(chat_id))
+        if message.text: return bot.send_message(chat_id, "নিচের সাইবার টার্মিনাল থেকে সার্ভিস বেছে নিন:", reply_markup=main_bottom_keyboard(chat_id))
         return
 
     step = state.get('step')
 
-    if step == 'AWAITING_BROADCAST_MSG' and chat_id == ADMIN_ID:
+    if step == 'AWAITING_ADMIN_PASS_RULE' and chat_id == ADMIN_ID:
+        user_states.pop(chat_id, None)
+        new_rule = text.strip()
+        update_setting("pass_rule", new_rule)
+        return bot.send_message(ADMIN_ID, f"✅ <b>আজকের পাসওয়ার্ড নিয়ম সফলভাবে সেট করা হয়েছে:</b> <code>{sanitize_html(new_rule)}</code>", reply_markup=admin_bottom_keyboard())
+
+    elif step == 'AWAITING_USER_SET_PASS':
+        p_rule = str(get_setting("pass_rule", "")).strip()
+        new_pass = text.strip()
+        
+        if p_rule and p_rule.lower() != "none" and p_rule not in new_pass:
+            return bot.send_message(chat_id, f"❌ <b>ভুল পাসওয়ার্ড ফরম্যাট!</b>\nআজকের পাসওয়ার্ডের ভেতরে অবশ্যই নিয়ম কোড (<code>{sanitize_html(p_rule)}</code>) থাকতে হবে। আবার চেষ্টা করুন:", reply_markup=cancel_keyboard())
+        
+        user_states.pop(chat_id, None)
+        update_user_field(chat_id, "custom_password", new_pass)
+        return bot.send_message(chat_id, f"🎉 <b>সফল!</b> আপনার ডিফল্ট পাসওয়ার্ড সেভ করা হয়েছে: <code>{sanitize_html(new_pass)}</code>", reply_markup=submit_tasks_keyboard())
+
+    elif step == 'AWAITING_BROADCAST_MSG' and chat_id == ADMIN_ID:
         user_states.pop(chat_id, None)
         all_users = list(users_col.find({"banned": False}))
         bot.send_message(ADMIN_ID, f"📢 <b>{len(all_users)}</b> জন ইউজারকে মেসেজ পাঠানো শুরু হচ্ছে...", reply_markup=admin_bottom_keyboard())
@@ -1088,14 +1484,14 @@ def _process_main_router(message):
         user_states.pop(chat_id, None)
         msg_txt = text if text else "Media/File Sent"
         ticket_id = f"TKT-{random.randint(1000,9999)}"
-        bot.send_message(ADMIN_ID, f"🎫 <b>New Support Ticket: {ticket_id}</b>\n👤 User: <code>{chat_id}</code>\n📝 Message:\n{msg_txt}")
+        bot.send_message(ADMIN_ID, f"🎫 <b>New Support Ticket: {ticket_id}</b>\n👤 User: <code>{chat_id}</code>\n📝 Message:\n{sanitize_html(msg_txt)}")
         return bot.send_message(chat_id, "✅ আপনার মেসেজ এডমিনের কাছে পাঠানো হয়েছে। খুব শীঘ্রই উত্তর দেওয়া হবে।", reply_markup=main_bottom_keyboard(chat_id))
 
     elif step == 'AWAITING_WITHDRAW_DETAILS':
         user_states.pop(chat_id, None)
         bal = float(user.get("balance") or 0.0)
         try:
-            bot.send_message(ADMIN_ID, f"💸 <b>Withdraw Request!</b>\n👤 User: <code>{chat_id}</code>\n💰 Current Bal: ৳{bal:.2f}\n📝 Details:\n{text}")
+            bot.send_message(ADMIN_ID, f"💸 <b>Withdraw Request!</b>\n👤 User: <code>{chat_id}</code>\n💰 Current Bal: ৳{bal:.2f}\n📝 Details:\n{sanitize_html(text)}")
             bot.send_message(chat_id, "✅ আপনার উইথড্র রিকোয়েস্ট এডমিনের কাছে পাঠানো হয়েছে!", reply_markup=account_keyboard())
         except Exception: pass
         return
@@ -1147,19 +1543,31 @@ def _process_main_router(message):
             if is_live: live_list.append(line)
             else: dead_list.append(line)
         out = f"📊 <b>INSTAGRAM BULK CHECK REPORT</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n• মোট চেক: {len(lines)} টি\n🟢 <b>Live:</b> {len(live_list)} টি\n🔴 <b>Dead:</b> {len(dead_list)} টি\n\n🟢 <b>LIVE LIST:</b>\n"
-        for l in live_list: out += f"<code>{l}</code>\n"
+        for l in live_list: out += f"<code>{sanitize_html(l)}</code>\n"
         return bot.send_message(chat_id, out, reply_markup=helper_tools_keyboard())
 
+    # Worker Bulk Text Submission
     elif step == 'AWAITING_BULK_TEXT':
+        saved_pass = user.get("custom_password")
+        p_rule = str(get_setting("pass_rule", "")).strip()
+
+        password_to_use = saved_pass if (saved_pass and str(saved_pass).strip() != "" and str(saved_pass).lower() != "none") else p_rule
+
+        if p_rule and p_rule.lower() != "none" and p_rule not in password_to_use:
+            return bot.send_message(
+                chat_id, 
+                f"❌ <b>জমা বাতিল করা হয়েছে!</b>\n"
+                f"আপনার সেভ করা পাসওয়ার্ডে আজকের নিয়ম (<code>{sanitize_html(p_rule)}</code>) নেই।\n"
+                f"দয়া করে আগে <b>'⚙️ পাসওয়ার্ড নিয়ম'</b> সেকশন থেকে আজকের নিয়ম মেনে নতুন পাসওয়ার্ড সেভ করুন।", 
+                reply_markup=submit_tasks_keyboard()
+            )
+
         user_states.pop(chat_id, None)
         lines = [l.strip() for l in text.split("\n") if l.strip()]
         success_list, dup_list, total_earned = [], [], 0.0
         now_time = get_bd_time()
         now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
         date_key = now_time.strftime("%Y-%m-%d")
-        
-        saved_pass = user.get("custom_password")
-        password_to_use = saved_pass if (saved_pass and str(saved_pass).strip() != "" and str(saved_pass).lower() != "none") else get_setting("pass_rule", "20")
 
         for line in lines:
             uid = extract_numeric_uid(line)
@@ -1170,6 +1578,7 @@ def _process_main_router(message):
             p_hash = generate_payload_hash(line)
             if is_payload_blacklisted(p_hash): continue
             cat_key = "fb_cookie" if is_valid_cookies(line) else "fb_2fa"
+            cat_display = CAT_MAP.get(cat_key, "FB Cookies")
             rate = float(get_current_task_rate(cat_key))
             track_id = generate_tracking_id()
 
@@ -1177,7 +1586,7 @@ def _process_main_router(message):
             submissions_col.insert_one({
                 "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
                 "password": password_to_use, "payload": line, "payload_hash": p_hash,
-                "track_id": track_id, "category": "FB Cookies" if "cookie" in cat_key else "FB 2FA",
+                "track_id": track_id, "category": cat_display,
                 "category_key": cat_key, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
             })
             success_list.append(uid); total_earned += rate
@@ -1185,18 +1594,20 @@ def _process_main_router(message):
             try:
                 bot.send_message(
                     LOG_CHANNEL_ID,
-                    f"📥 <b>NEW SUBMISSION (Bulk Text)</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📌 Track: <code>{track_id}</code>\n"
-                    f"👤 Worker: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
-                    f"🆔 UID: <code>{uid}</code>\n"
-                    f"📁 Cat: <b>{cat_key}</b>\n"
-                    f"💰 Rate: ৳{rate:.2f}"
+                    f"📥 <b>NEW SUBMISSION (Bulk Text)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}"
                 )
             except Exception: pass
 
+        safe_raw_text = sanitize_html(text[:2500])
+        send_private_backup_message(
+            f"📦 <b>[PRIVATE BACKUP - Bulk Text Submission]</b>\n"
+            f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
+            f"🔑 Pass: <code>{sanitize_html(password_to_use)}</code> | ✅ Valid: <b>{len(success_list)}</b> টি | 💰 Hold: ৳{total_earned:.2f}\n\n"
+            f"📄 <b>Raw Text:</b>\n<code>{safe_raw_text}</code>"
+        )
+
         users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
-        out = f"🎉 <b>বাল্ক সাবমিশন সম্পন্ন!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ সফল: {len(success_list)} টি\n⚠️ স্কিপড/ডুপ্লিকেট: {len(dup_list)} টি\n💰 আর্ন (এসক্রো হোল্ড): ৳{total_earned:.2f}\n\n🟢 <b>ACCEPTED UID LIST:</b>\n"
+        out = f"🎉 <b>বাল্ক সাবমিশন সম্পন্ন!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ সফল: {len(success_list)} টি | ⚠️ স্কিপড/ডুপ্লিকেট: {len(dup_list)} টি\n💰 আর্ন (এসক্রো হোল্ড): ৳{total_earned:.2f}\n\n🟢 <b>ACCEPTED UID LIST:</b>\n"
         for s in success_list: out += f"<code>{s}</code>\n"
         return bot.send_message(chat_id, out, reply_markup=submit_tasks_keyboard())
 
@@ -1211,12 +1622,14 @@ def _process_main_router(message):
     elif step == 'AWAITING_SINGLE_DATA':
         cat, uid = state.get('category', 'fb_cookie'), state.get('uid')
         saved_pass = user.get("custom_password")
+        p_rule = str(get_setting("pass_rule", "")).strip()
         
         has_valid_saved_pass = False
         if saved_pass and isinstance(saved_pass, str):
             cleaned_p = saved_pass.strip()
             if cleaned_p and cleaned_p.lower() != "none":
-                has_valid_saved_pass = True
+                if not p_rule or p_rule.lower() == "none" or (p_rule in cleaned_p):
+                    has_valid_saved_pass = True
 
         if has_valid_saved_pass:
             user_states.pop(chat_id, None)
@@ -1228,26 +1641,26 @@ def _process_main_router(message):
             if is_payload_blacklisted(p_hash): return bot.send_message(chat_id, "❌ ব্ল্যাকলিস্টেড ডাটা!", reply_markup=submit_tasks_keyboard())
             rate = float(get_current_task_rate(cat))
             track_id = generate_tracking_id()
+            cat_display = CAT_MAP.get(cat, "FB Cookies")
 
             async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, cleaned_p, text])
             submissions_col.insert_one({
                 "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
                 "password": cleaned_p, "payload": text, "payload_hash": p_hash,
-                "track_id": track_id, "category": "FB Cookies" if "cookie" in cat else "FB 2FA",
+                "track_id": track_id, "category": cat_display,
                 "category_key": cat, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
             })
             users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
             
+            safe_payload = sanitize_html(text[:2500])
+            send_private_backup_message(
+                f"📌 <b>[PRIVATE BACKUP - Single Task]</b>\nTrack: <code>{track_id}</code> | Worker: <code>{chat_id}</code> | UID: <code>{uid}</code>\nPass: <code>{sanitize_html(cleaned_p)}</code>\nPayload:\n<code>{safe_payload}</code>"
+            )
+
             try:
                 bot.send_message(
                     LOG_CHANNEL_ID,
-                    f"📥 <b>NEW SUBMISSION (Single Fast-Track)</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📌 Track: <code>{track_id}</code>\n"
-                    f"👤 Worker: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
-                    f"🆔 UID: <code>{uid}</code>\n"
-                    f"📁 Cat: <b>{cat}</b>\n"
-                    f"💰 Rate: ৳{rate:.2f}"
+                    f"📥 <b>NEW SUBMISSION (Single Fast-Track)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}"
                 )
             except Exception: pass
 
@@ -1255,15 +1668,23 @@ def _process_main_router(message):
         else:
             state['payload'] = text
             state['step'] = 'AWAITING_MANUAL_PASSWORD'
-            return bot.send_message(chat_id, "🔑 <b>আপনার পাসওয়ার্ড দিন:</b>\n<i>(যেহেতু আপনার কোনো ডিফল্ট পাসওয়ার্ড সেভ করা নেই)</i>", reply_markup=cancel_keyboard())
+            
+            prompt_msg = "🔑 <b>আপনার পাসওয়ার্ড দিন:</b>\n"
+            if p_rule and p_rule.lower() != "none":
+                prompt_msg += f"⚠️ <i>আজকের পাসওয়ার্ডে অবশ্যই নিয়ম কোডটি (<code>{sanitize_html(p_rule)}</code>) থাকতে হবে!</i>"
+            return bot.send_message(chat_id, prompt_msg, reply_markup=cancel_keyboard())
 
     elif step == 'AWAITING_MANUAL_PASSWORD':
-        user_states.pop(chat_id, None)
         cat = state.get('category', 'fb_cookie')
         uid = state.get('uid')
         payload = state.get('payload')
         manual_pass = text.strip()
-        
+        p_rule = str(get_setting("pass_rule", "")).strip()
+
+        if p_rule and p_rule.lower() != "none" and p_rule not in manual_pass:
+            return bot.send_message(chat_id, f"❌ <b>ভুল পাসওয়ার্ড!</b>\nআজকের পাসওয়ার্ড নিয়ম (<code>{sanitize_html(p_rule)}</code>) অন্তর্ভুক্ত থাকতে হবে। সঠিক পাসওয়ার্ড দিন:", reply_markup=cancel_keyboard())
+
+        user_states.pop(chat_id, None)
         now_time = get_bd_time()
         now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
         date_key = now_time.strftime("%Y-%m-%d")
@@ -1272,26 +1693,26 @@ def _process_main_router(message):
         if is_payload_blacklisted(p_hash): return bot.send_message(chat_id, "❌ ব্ল্যাকলিস্টেড ডাটা!", reply_markup=submit_tasks_keyboard())
         rate = float(get_current_task_rate(cat))
         track_id = generate_tracking_id()
+        cat_display = CAT_MAP.get(cat, "FB Cookies")
 
         async_save_to_sheet("Cookies_Data" if "cookie" in cat else "2FA_Data", [now_str, track_id, str(chat_id), uid, manual_pass, payload])
         submissions_col.insert_one({
             "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
             "password": manual_pass, "payload": payload, "payload_hash": p_hash,
-            "track_id": track_id, "category": "FB Cookies" if "cookie" in cat else "FB 2FA",
+            "track_id": track_id, "category": cat_display,
             "category_key": cat, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
         })
         users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
 
+        safe_payload = sanitize_html(payload[:2500])
+        send_private_backup_message(
+            f"📌 <b>[PRIVATE BACKUP - Single Manual Pass]</b>\nTrack: <code>{track_id}</code> | Worker: <code>{chat_id}</code> | UID: <code>{uid}</code>\nPass: <code>{sanitize_html(manual_pass)}</code>\nPayload:\n<code>{safe_payload}</code>"
+        )
+
         try:
             bot.send_message(
                 LOG_CHANNEL_ID,
-                f"📥 <b>NEW SUBMISSION (Single Manual Pass)</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📌 Track: <code>{track_id}</code>\n"
-                f"👤 Worker: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
-                f"🆔 UID: <code>{uid}</code>\n"
-                f"📁 Cat: <b>{cat}</b>\n"
-                f"💰 Rate: ৳{rate:.2f}"
+                f"📥 <b>NEW SUBMISSION (Single Manual Pass)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}"
             )
         except Exception: pass
 
@@ -1299,12 +1720,12 @@ def _process_main_router(message):
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("💾 এই পাসওয়ার্ডটি ডিফল্ট হিসেবে সেভ করুন", callback_data="save_pass_default"))
 
-        return bot.send_message(chat_id, f"🎉 <b>কাজ জমা সফল হয়েছে!</b>\n📌 Track ID: <code>{track_id}</code>\n🔑 পাসওয়ার্ড: <code>{manual_pass}</code>\n💰 আর্ন (এসক্রো হোল্ড): ৳{rate:.2f}", reply_markup=markup)
+        return bot.send_message(chat_id, f"🎉 <b>কাজ জমা সফল হয়েছে!</b>\n📌 Track ID: <code>{track_id}</code>\n🔑 পাসওয়ার্ড: <code>{sanitize_html(manual_pass)}</code>\n💰 আর্ন (এসক্রো হোল্ড): ৳{rate:.2f}", reply_markup=markup)
 
-# ================= 8. Production Server Engine =================
+# ================= 9. Production Server Engine =================
 
 if __name__ == "__main__":
-    print("Enterprise OEB NEXUS Engine Active...")
+    print("Enterprise OEB NEXUS Cyber Engine Active...")
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
     if render_url:
         try:
