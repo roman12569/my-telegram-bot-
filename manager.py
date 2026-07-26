@@ -9,6 +9,7 @@ from datetime import timedelta, timezone
 import threading
 import concurrent.futures
 import collections
+import queue
 import time
 import hashlib
 import requests
@@ -77,7 +78,7 @@ blacklisted_payloads_col = db['blacklisted_payloads']
 ai_logs_col = db['ai_logs']
 sheet_overflow_col = db['sheet_overflow_queue']
 
-# FIXED 2: Strict Unique Indexing on UID to Prevent Race Condition Duplicates
+# Strict Unique Indexing on UID to Prevent Race Condition Duplicates
 try:
     submissions_col.create_index("track_id", unique=True, background=True)
     submissions_col.create_index("uid", unique=True, background=True)
@@ -96,15 +97,28 @@ REQUIRED_CHANNELS = [
 # Timezone definition for Bangladesh (UTC+6)
 BD_TIMEZONE = timezone(timedelta(hours=6))
 
-# Non-blocking Bounded Executor to Prevent Webhook Freeze
-class NonBlockingBoundedExecutor:
+# Safe Bounded Executor with Dedicated Single Overflow Thread
+class SafeBoundedExecutor:
     def __init__(self, max_workers, max_queue):
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self.semaphore = threading.Semaphore(max_workers + max_queue)
-        
+        self.overflow_queue = queue.Queue(maxsize=10000)
+        threading.Thread(target=self._overflow_worker, daemon=True).start()
+
+    def _overflow_worker(self):
+        while True:
+            try:
+                fn, args, kwargs = self.overflow_queue.get()
+                try:
+                    fn(*args, **kwargs)
+                except Exception:
+                    pass
+                self.overflow_queue.task_done()
+            except Exception:
+                pass
+
     def submit(self, fn, *args, **kwargs):
-        acquired = self.semaphore.acquire(blocking=False)
-        if acquired:
+        if self.semaphore.acquire(blocking=False):
             try:
                 future = self.executor.submit(fn, *args, **kwargs)
                 future.add_done_callback(lambda x: self.semaphore.release())
@@ -113,16 +127,14 @@ class NonBlockingBoundedExecutor:
                 self.semaphore.release()
                 raise
         else:
-            def fallback():
-                try:
-                    fn(*args, **kwargs)
-                except Exception:
-                    pass
-            threading.Thread(target=fallback, daemon=True).start()
+            try:
+                self.overflow_queue.put_nowait((fn, args, kwargs))
+            except queue.Full:
+                pass 
 
-background_executor = NonBlockingBoundedExecutor(max_workers=20, max_queue=5000)
+background_executor = SafeBoundedExecutor(max_workers=20, max_queue=5000)
 
-# FIXED 1: Fully Thread-Safe LRU Cache in MongoDict
+# Fully Thread-Safe LRU Cache in MongoDict
 class MongoDict:
     def __init__(self, collection, max_cache_size=10000):
         self.col = collection
@@ -532,7 +544,7 @@ def get_gspread_client(force_refresh=False):
                 raise
         return global_gspread_client
 
-# ZERO DATA LOSS DAEMON WITH MONGODB PERSISTENT OVERFLOW QUEUE
+# ZERO DATA LOSS DAEMON WITH SAFE GROUPED RECOVERY (Fixes API Rate Limit Loop)
 def background_sheet_writer_daemon():
     MAX_RAM_QUEUE_SIZE = 3000
     while True:
@@ -547,18 +559,35 @@ def background_sheet_writer_daemon():
             gc = get_gspread_client(force_refresh=False)
             sheet = gc.open_by_key(SPREADSHEET_ID)
             
+            # --- 1. SMART OVERFLOW RECOVERY (Grouped by Tab) ---
             overflow_docs = list(sheet_overflow_col.find().limit(500))
             if overflow_docs:
+                grouped_overflow = {}
+                doc_ids_by_tab = {}
+                
                 for o_doc in overflow_docs:
                     o_tab = o_doc.get("tab_name")
                     o_rows = o_doc.get("rows", [])
+                    
+                    if o_tab not in grouped_overflow:
+                        grouped_overflow[o_tab] = []
+                        doc_ids_by_tab[o_tab] = []
+                        
+                    grouped_overflow[o_tab].extend(o_rows)
+                    doc_ids_by_tab[o_tab].append(o_doc["_id"])
+                
+                for o_tab, aggregated_rows in grouped_overflow.items():
                     try:
                         ws = sheet.worksheet(o_tab)
                     except gspread.exceptions.WorksheetNotFound:
-                        ws = sheet.add_worksheet(title=o_tab, rows=1000, cols=10)
-                    ws.append_rows(o_rows)
-                    sheet_overflow_col.delete_one({"_id": o_doc["_id"]})
-
+                        ws = sheet.add_worksheet(title=o_tab, rows=1000, cols=max(len(r) for r in aggregated_rows) + 2)
+                    
+                    ws.append_rows(aggregated_rows)
+                    
+                    sheet_overflow_col.delete_many({"_id": {"$in": doc_ids_by_tab[o_tab]}})
+                    time.sleep(2) 
+            
+            # --- 2. REGULAR BATCH SNAPSHOT SYNC ---
             for tab_name, rows in snapshot.items():
                 if not rows: continue
                 try:
@@ -566,13 +595,15 @@ def background_sheet_writer_daemon():
                 except gspread.exceptions.WorksheetNotFound:
                     cols_count = max(len(r) for r in rows) + 2
                     worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=cols_count)
+                
                 worksheet.append_rows(rows)
+                time.sleep(1.5) 
 
         except Exception as e:
             err_str = str(e)
             log_ai_report("Google Sheet Daemon Exception", err_str, "Retrying with Auto Token Refresh & Mongo Failover...")
             
-            if "401" in err_str or "invalid_grant" in err_str.lower() or "token" in err_str.lower():
+            if "401" in err_str or "invalid_grant" in err_str.lower() or "token" in err_str.lower() or "quota" in err_str.lower():
                 try: get_gspread_client(force_refresh=True)
                 except: pass
 
