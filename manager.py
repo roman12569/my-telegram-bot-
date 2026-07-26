@@ -410,12 +410,17 @@ def get_current_task_rate(cat_key):
     base_rate += get_active_surge_bonus()
     return base_rate
 
-# OPTIMIZED GOOGLE SHEETS BATCH APPEND (BUG FIX #3)
+# OPTIMIZED GOOGLE SHEETS BATCH APPEND WITH DEBUG PRINTGING
 def async_save_batch_to_sheet(tab_name, rows_list):
-    """Appends multiple rows in a single API call to avoid 429 Rate Limit errors."""
+    """Appends multiple rows in a single API call and prints errors if any occur."""
     def task():
         try:
-            if not os.path.exists(CREDENTIALS_FILE) or not rows_list: return
+            if not os.path.exists(CREDENTIALS_FILE):
+                print(f"[GOOGLE SHEET ERROR]: {CREDENTIALS_FILE} not found on server root!")
+                return
+            if not rows_list: 
+                return
+            
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
             creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
             gc = gspread.authorize(creds)
@@ -426,8 +431,15 @@ def async_save_batch_to_sheet(tab_name, rows_list):
                 cols_count = max(len(r) for r in rows_list) + 2
                 worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=cols_count)
             worksheet.append_rows(rows_list)
+            print(f"[GOOGLE SHEET SUCCESS]: Appended {len(rows_list)} rows to tab '{tab_name}'.")
         except Exception as e:
+            err_msg = f"[GOOGLE SHEET EXCEPTION]: {str(e)}"
+            print(err_msg)
             log_ai_report("Google Sheet Batch Error", str(e), "Check credentials.json and Share permission on Sheet.")
+            try:
+                bot.send_message(ADMIN_ID, f"⚠️ <b>Google Sheet Error Alert:</b>\n<code>{sanitize_html(str(e))}</code>")
+            except Exception:
+                pass
     threading.Thread(target=task, daemon=True).start()
 
 def async_save_to_sheet(tab_name, row_data):
@@ -801,7 +813,6 @@ def _process_callbacks(call):
         w_doc = withdrawals_col.find_one({"withdraw_id": w_id, "status": "Pending"})
         if w_doc:
             withdrawals_col.update_one({"withdraw_id": w_id}, {"$set": {"status": "Rejected"}})
-            # Refund money to user balance
             users_col.update_one({"_id": w_doc['chat_id']}, {"$inc": {"balance": w_doc['amount']}})
             bot.edit_message_text(f"❌ <b>WITHDRAWAL REJECTED & REFUNDED</b>\nID: <code>{w_id}</code>\nWorker: <code>{w_doc['chat_id']}</code>", chat_id, call.message.message_id)
             try:
@@ -1223,7 +1234,7 @@ def _process_document(message):
                 "আপনার এক্সেল ফাইলের জন্য ডিফল্ট পাসওয়ার্ডটি গ্রহণ করা হয়নি!",
                 f"পাসওয়ার্ডটির (<code>{sanitize_html(password_to_use)}</code>) একদম শেষে আজকের সিকিউরিটি কোড '<code>{sanitize_html(p_rule)}</code>' অনুপস্থিত।",
                 f"একাউন্ট খোলার সময়ই পাসওয়ার্ডের 'একদম শেষে' '<code>{sanitize_html(p_rule)}</code>' বসিয়ে একাউন্ট খুলুন এবং সেই পাসওয়ার্ডটি সেভ করুন। ভুল পাসওয়ার্ড দিলে একাউন্ট ব্যাক/রিজেক্ট হবে!",
-                "আইডি খোলার আগেই '⚙️ পাসওয়ার্ড নিয়ম' সেকশনে গিয়ে আজকের সিকিউরিটি কোড মেনে পাসওয়ার্ড সেভ করে ফাইল আপলোড দিন।"
+                "আইডি খোলার আগেই '⚙️ পাসওয়ার্ড নিয়ম' সেকশনে গিয়ে আজকের সিকিউরিটি কোড মেনে পাসওয়ার্ড সেভ করে ফাইল আপলোড দিন."
             )
             return bot.reply_to(message, ai_warn, reply_markup=submit_tasks_keyboard())
 
