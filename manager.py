@@ -23,11 +23,7 @@ from telebot.apihelper import ApiTelegramException
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from pymongo import MongoClient
-
-# Cryptography for AES-256 Encrypted Backups
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.backends import default_backend
+import google.generativeai as genai
 
 # ================= 1. Configuration & Credentials =================
 TOKEN = os.environ.get("BOT_TOKEN", "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4")
@@ -35,11 +31,19 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", 6257034751))
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1aWntk0eMZt6w7GWmXs_PmckvoDT1uCCRiGUELiV4NKA")
 CREDENTIALS_FILE = "credentials.json"
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 LOG_CHANNEL_ID = -1003943094107
 BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID", -1003943094107))
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+
+# Configure Google Gemini AI
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    ai_model = None
 
 try:
     BOT_USERNAME = bot.get_me().username
@@ -113,21 +117,93 @@ def get_bd_time():
     """Returns current Bangladesh Time (UTC+6) with proper timezone awareness."""
     return datetime.datetime.now(BD_TIMEZONE)
 
+def parse_iso_datetime(dt_val):
+    """Safely parses datetime and ensures timezone awareness (BD Time)."""
+    if not dt_val:
+        return get_bd_time()
+    if isinstance(dt_val, datetime.datetime):
+        if dt_val.tzinfo is None:
+            return dt_val.replace(tzinfo=BD_TIMEZONE)
+        return dt_val.astimezone(BD_TIMEZONE)
+    if isinstance(dt_val, str):
+        try:
+            parsed = datetime.datetime.fromisoformat(dt_val)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=BD_TIMEZONE)
+            return parsed.astimezone(BD_TIMEZONE)
+        except Exception:
+            return get_bd_time()
+    return get_bd_time()
+
 def log_ai_report(issue_type, description, fix_action):
-    """Logs Background Error Recovery quietly."""
+    """AI Auto-Healing Logger with Admin Bangla Fix Guide."""
     now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
     ai_logs_col.insert_one({"timestamp": now_str, "type": issue_type, "description": description, "action": fix_action})
+    
     audit_msg = (
         f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-        f"┃ 🧠 AI AUTO-FIX AUDIT LOG            ┃\n"
+        f"┃ 🧠 AI অটো-ডিটেকশন ও সিস্টেম রিপোর্ট   ┃\n"
         f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-        f"┃ ⏱️ TIME   : {now_str}\n"
-        f"┃ 📌 ISSUE  : {description[:25]}\n"
-        f"┃ 🛠️ ACTION : {fix_action[:25]}\n"
+        f"┃ ⏱️ সময়     : {now_str}\n"
+        f"┃ 📌 সমস্যা   : {issue_type}\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
+        f"┃ 🔍 আসল সমস্যা বিবরণ:                    ┃\n"
+        f"┃   {description[:120]}                  ┃\n"
+        f"┃                                      ┃\n"
+        f"┃ 🛠️ বট কী করেছে:                       ┃\n"
+        f"┃   {fix_action[:120]}                 ┃\n"
         f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
     )
-    try: bot.send_message(ADMIN_ID, audit_msg)
-    except Exception: pass
+    try: 
+        bot.send_message(ADMIN_ID, audit_msg)
+    except Exception: 
+        pass
+
+def ask_ai_chatbot(user_message):
+    """AI Customer Support Chatbot Response Generator."""
+    if not ai_model:
+        return "আসসালামু আলাইকুম! OEB NEXUS বটে আপনাকে স্বাগতম। নিচের মেনু থেকে আপনার প্রয়োজনীয় সেবা বেছে নিন।"
+    try:
+        prompt = (
+            f"You are an AI support assistant for a professional online earning and social media account management bot named 'OEB NEXUS'. "
+            f"Answer the user's query in friendly, helpful, and concise Bengali. "
+            f"User Query: {user_message}"
+        )
+        response = ai_model.generate_content(prompt)
+        return response.text.strip()
+    except Exception:
+        return "আপনার বার্তাটি আমরা পেয়েছি। দয়া করে প্রধান মেনু থেকে আপনার কাঙ্ক্ষিত অপশনটি সিলেক্ট করুন।"
+
+def ai_analyze_ticket_sentiment(ticket_text):
+    """AI Sentiment & Priority Analysis for Support Tickets."""
+    if not ai_model:
+        return "Normal", "সাধারণ সাপোর্ট বার্তা"
+    try:
+        prompt = (
+            f"Analyze the following support ticket message and determine its priority (High or Normal) and provide a 1-line summary in Bengali. "
+            f"Format as JSON with keys 'priority' and 'summary'. Message: {ticket_text}"
+        )
+        response = ai_model.generate_content(prompt)
+        res_text = response.text.strip()
+        res_text = res_text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(res_text)
+        return data.get("priority", "Normal"), data.get("summary", "সাপোর্ট রিকোয়েস্ট")
+    except Exception:
+        return "Normal", "সাপোর্ট রিকোয়েস্ট"
+
+def calculate_worker_trust_score(chat_id):
+    """Calculates worker trust score & returns performance badge."""
+    total = submissions_col.count_documents({"chat_id": chat_id})
+    appr = submissions_col.count_documents({"chat_id": chat_id, "status": "Approved"})
+    if total == 0:
+        return "New Worker", 100
+    ratio = appr / total
+    if total >= 50 and ratio >= 0.90:
+        return "⭐ VIP Worker", int(ratio * 100)
+    elif total >= 20 and ratio >= 0.75:
+        return "🛡️ Trusted Worker", int(ratio * 100)
+    else:
+        return "👤 Regular Worker", int(ratio * 100)
 
 def sanitize_html(text):
     if not text: return "Worker"
@@ -289,8 +365,9 @@ def get_current_task_rate(cat_key):
     base_rate = float(rates.get(cat_key, 5.0))
     surge_info = get_setting("surge_pricing", {"active": False, "bonus": 0.0, "expires_at": None})
     if surge_info.get("active"):
-        exp = surge_info.get("expires_at")
-        if exp and get_bd_time() < exp: base_rate += float(surge_info.get("bonus", 0.0))
+        exp = parse_iso_datetime(surge_info.get("expires_at"))
+        if exp and get_bd_time() < exp: 
+            base_rate += float(surge_info.get("bonus", 0.0))
     return base_rate
 
 def async_save_to_sheet(tab_name, row_data):
@@ -402,6 +479,10 @@ def submit_tasks_keyboard():
     markup.add(KeyboardButton("🔙 পেছনে যান"), KeyboardButton("🏠 মেইন মেনু"))
     return markup
 
+def tasks_and_tools_keyboard():
+    """Maps to submit_tasks_keyboard to resolve NameError safely."""
+    return submit_tasks_keyboard()
+
 def category_bottom_keyboard():
     rates = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -450,10 +531,6 @@ def cancel_keyboard():
 # ================= 5. Dynamic User Control Center Render Engine =================
 
 def render_user_manager_page(admin_chat_id, message_id=None, page=1):
-    """
-    Renders real-time paginated user manager inside Cyber Frame.
-    Includes Button HTML-Encoding fixes & Telegram duplicate message safeguards.
-    """
     users_per_page = 5
     total_u = users_col.count_documents({})
     banned_u = users_col.count_documents({"banned": True})
@@ -523,7 +600,6 @@ def render_user_manager_page(admin_chat_id, message_id=None, page=1):
 # ================= 6. Background Daemon & Report Scheduler =================
 
 def escrow_daemon():
-    """Escrow Daemon: Purely monitoring heartbeat."""
     while True:
         try:
             time.sleep(3600)
@@ -536,13 +612,16 @@ threading.Thread(target=escrow_daemon, daemon=True).start()
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
-def flask_home(): return "OEB NEXUS Cyber Production Engine Active!"
+def flask_home(): return "OEB NEXUS Cyber-AI Production Engine Active!"
 
 @flask_app.route(f'/{TOKEN}', methods=['POST'])
 def telegram_webhook():
-    if request.headers.get('content-type') == 'application/json':
-        bot.process_new_updates([telebot.types.Update.de_json(request.get_data().decode('utf-8'))])
-        return '', 200
+    try:
+        if request.headers.get('content-type') == 'application/json':
+            bot.process_new_updates([telebot.types.Update.de_json(request.get_data().decode('utf-8'))])
+            return '', 200
+    except Exception as e:
+        log_ai_report("Webhook Exception", str(e), "Handled via webhook safety wrapper.")
     abort(403)
 
 # ================= 8. Core Command & Router Handlers =================
@@ -573,7 +652,7 @@ def send_welcome(message):
 
         welcome_card = (
             f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-            f"┃  ❖ OEB NEXUS // CYBER CORE v5.0     ┃\n"
+            f"┃  ❖ OEB NEXUS // CYBER-AI v6.0       ┃\n"
             f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
             f"┃ 👤 OPERATOR : <code>{fname[:18]}</code>\n"
             f"┃ 🆔 USER ID  : <code>#{chat_id}</code>\n"
@@ -582,7 +661,7 @@ def send_welcome(message):
             f"┃ ⏳ ESCROW   : <code>৳ {hold_bal:<10.2f} BDT</code>\n"
             f"┃ 🛡 STATUS   : 🟢 <code>ACTIVE STAFF</code>        ┃\n"
             f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ ⚡ SYSTEM STATUS : ONLINE // 256-BIT  ┃\n"
+            f"┃ ⚡ AI CITADEL : ONLINE // 256-BIT    ┃\n"
             f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
             f"  ► <i>কাজের জন্য নিচের টার্মিনাল বাটন ব্যবহার করুন:</i>"
         )
@@ -630,7 +709,6 @@ def _process_callbacks(call):
         else:
             bot.edit_message_text("⚠️ কোনো পেন্ডিং পাসওয়ার্ড পাওয়া যায়নি!", chat_id, call.message.message_id)
 
-    # --- WORKER INLINE PASSWORD ACTIONS ---
     elif code == "user_set_custom_pass":
         try: bot.answer_callback_query(call.id)
         except Exception: pass
@@ -647,7 +725,6 @@ def _process_callbacks(call):
         update_user_field(chat_id, "custom_password", "")
         bot.edit_message_text("🗑️ <b>আপনার সেভ করা ডিফল্ট পাসওয়ার্ড সফলভাবে মুছে ফেলা হয়েছে!</b>", chat_id, call.message.message_id)
 
-    # --- UNLIMITED PROFILE GENERATOR CALLBACKS ---
     elif code.startswith("gen_prof_"):
         try: bot.answer_callback_query(call.id)
         except Exception: pass
@@ -663,7 +740,6 @@ def _process_callbacks(call):
         except Exception:
             bot.send_message(chat_id, msg_text, reply_markup=markup)
 
-    # --- DYNAMIC USER MANAGER HANDLERS ---
     elif code.startswith("um_page_") and chat_id == ADMIN_ID:
         try: bot.answer_callback_query(call.id)
         except Exception: pass
@@ -688,7 +764,6 @@ def _process_callbacks(call):
 
         render_user_manager_page(ADMIN_ID, call.message.message_id, target_page)
 
-    # --- ADMIN DASHBOARD & MATCH ROUTING ---
     elif code.startswith("dash_dt_") and chat_id == ADMIN_ID:
         try: bot.answer_callback_query(call.id)
         except Exception: pass
@@ -921,7 +996,8 @@ def _process_callbacks(call):
             bot.send_message(ADMIN_ID, "🛑 <b>সার্জ বোনাস বন্ধ করা হয়েছে।</b>")
         else:
             hrs = int(act)
-            update_setting("surge_pricing", {"active": True, "bonus": 2.0, "expires_at": get_bd_time() + timedelta(hours=hrs)})
+            exp_time = get_bd_time() + timedelta(hours=hrs)
+            update_setting("surge_pricing", {"active": True, "bonus": 2.0, "expires_at": exp_time.isoformat()})
             bot.send_message(ADMIN_ID, f"⚡ <b>+৳২.০০ সার্জ বোনাস {hrs} ঘণ্টার জন্য চালু করা হয়েছে!</b>")
 
     elif code.startswith("rate_edit_") and chat_id == ADMIN_ID:
@@ -948,7 +1024,6 @@ def _process_document(message):
     if is_user_banned(chat_id): return
     state = user_states.get(chat_id)
     
-    # Target-Date & Category Isolated Buyer Report Auto-Matcher
     if state and state.get('step') == 'AWAITING_BUYER_REPORT' and chat_id == ADMIN_ID:
         target_date = state.get('target_date', 'ALL')
         target_cat = state.get('target_cat', 'ALL')
@@ -1018,7 +1093,6 @@ def _process_document(message):
             reply_markup=admin_bottom_keyboard()
         )
 
-    # Worker Excel Submission (WITH STRICT PASSWORD RULE VALIDATION GUARD)
     if state and state.get('step') == 'AWAITING_EXCEL_FILE':
         user = get_user_data(chat_id)
         saved_pass = user.get("custom_password")
@@ -1026,7 +1100,6 @@ def _process_document(message):
 
         password_to_use = saved_pass if (saved_pass and str(saved_pass).strip() != "" and str(saved_pass).lower() != "none") else p_rule
 
-        # Strict validation check against current admin pass rule
         if p_rule and p_rule.lower() != "none" and p_rule not in password_to_use:
             return bot.reply_to(
                 message, 
@@ -1083,7 +1156,6 @@ def _process_document(message):
                     )
                 except Exception: pass
 
-        # AUTOMATIC PRIVATE BACKUP CHANNEL DELIVERY
         backup_file_buf = io.BytesIO(file_downloaded_bytes)
         send_private_backup_message(
             f"📊 <b>[PRIVATE BACKUP - Excel Submission]</b>\n"
@@ -1098,7 +1170,7 @@ def _process_document(message):
         users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
         return bot.reply_to(message, f"🎉 <b>ফাইল প্রসেস সম্পন্ন!</b>\n✅ সফল: <b>{success_count}</b> টি | 💰 আর্ন (হোল্ড): ৳{total_earned:.2f}", reply_markup=submit_tasks_keyboard())
 
-# --- MAIN TEXT ROUTER (WITH STICKY STATE LOCKING & PRIVATE BACKUP) ---
+# --- MAIN TEXT ROUTER ---
 @bot.message_handler(content_types=['text', 'photo', 'video', 'animation'])
 def main_router(message):
     try: _process_main_router(message)
@@ -1132,11 +1204,9 @@ def _process_main_router(message):
 
     current_state = user_states.get(chat_id, {}).copy()
 
-    # Clear state ONLY if explicit navigation button is pressed
     if text in nav_buttons or text.startswith("🛠 মেইনটেনেন্স:"):
         user_states.pop(chat_id, None)
 
-    # --- MULTI-LEVEL BACK CANCEL NAVIGATION ---
     if text == "❌ বাতিল করুন":
         step = current_state.get('step')
         if step in ['AWAITING_UID', 'AWAITING_SINGLE_DATA', 'AWAITING_MANUAL_PASSWORD', 'AWAITING_BULK_TEXT', 'AWAITING_EXCEL_FILE', 'AWAITING_USER_SET_PASS']:
@@ -1150,11 +1220,10 @@ def _process_main_router(message):
         elif step == 'AWAITING_SUPPORT_MSG':
             return bot.send_message(chat_id, "❌ টিকিট প্রক্রিয়া বাতিল করা হয়েছে।", reply_markup=bonus_support_keyboard())
         elif step == 'AWAITING_EDIT_PAYLOAD':
-            return bot.send_message(chat_id, "❌ এডিট বাতিল করা হয়েছে।", reply_markup=tasks_and_tools_keyboard())
+            return bot.send_message(chat_id, "❌ এডিট বাতিল করা হয়েছে।", reply_markup=main_bottom_keyboard(chat_id))
         else:
             return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে প্রধান মেনুতে ফিরে আসা হয়েছে।", reply_markup=main_bottom_keyboard(chat_id))
 
-    # --- STATIC CYBER NAVIGATIONS (LEVEL 1 & LEVEL 2) ---
     if text in ["🏠 মেইন মেনু", "🏠 প্রধান মেনু", "🔙 প্রধান মেনু"]:
         fname = sanitize_html(message.from_user.first_name)
         bal = float(user.get("balance") or 0.0)
@@ -1162,7 +1231,7 @@ def _process_main_router(message):
 
         welcome_card = (
             f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-            f"┃  ❖ OEB NEXUS // CYBER CORE v5.0     ┃\n"
+            f"┃  ❖ OEB NEXUS // CYBER-AI v6.0       ┃\n"
             f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
             f"┃ 👤 OPERATOR : <code>{fname[:18]}</code>\n"
             f"┃ 🆔 USER ID  : <code>#{chat_id}</code>\n"
@@ -1171,7 +1240,7 @@ def _process_main_router(message):
             f"┃ ⏳ ESCROW   : <code>৳ {hold_bal:<10.2f} BDT</code>\n"
             f"┃ 🛡 STATUS   : 🟢 <code>ACTIVE STAFF</code>        ┃\n"
             f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
-            f"┃ ⚡ SYSTEM STATUS : ONLINE // 256-BIT  ┃\n"
+            f"┃ ⚡ AI CITADEL : ONLINE // 256-BIT    ┃\n"
             f"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
             f"  ► <i>কাজের জন্য নিচের টার্মিনাল বাটন ব্যবহার করুন:</i>"
         )
@@ -1189,12 +1258,14 @@ def _process_main_router(message):
         bal = float(user.get("balance") or 0.0)
         hold_bal = float(user.get("hold_balance") or 0.0)
         safe_name = sanitize_html(message.from_user.first_name)
+        badge_title, trust_pct = calculate_worker_trust_score(chat_id)
         
         prof_card = (
             f"┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
             f"┃  👤 USER PROFILE // WALLET TERMINAL  ┃\n"
             f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n"
             f"┃ 👤 NAME   : <code>{safe_name[:18]}</code>\n"
+            f"┃ 🏅 BADGE  : <b>{badge_title}</b> ({trust_pct}%)\n"
             f"┃ 📊 TASKS  : <code>{cnt:<10}</code> TASKS       ┃\n"
             f"┃ 💰 MAIN   : <code>৳ {bal:<10.2f} BDT</code>    ┃\n"
             f"┃ ⏳ HOLD   : <code>৳ {hold_bal:<10.2f} BDT</code>    ┃\n"
@@ -1208,9 +1279,8 @@ def _process_main_router(message):
         return bot.send_message(chat_id, "🎁 <b>বোনাস ও সাপোর্ট সেন্টার:</b>", reply_markup=bonus_support_keyboard())
 
     elif text in ["👑 এডমিন কন্ট্রোল সেন্টার", "👑 এডমিন প্যানেল"] and chat_id == ADMIN_ID:
-        return bot.send_message(chat_id, "👑 <b>ADMIN CONTROL CENTER</b>\nসবকটি নতুন সাইবার ফিচার ও ফিল্টার চালু রয়েছে।", reply_markup=admin_bottom_keyboard())
+        return bot.send_message(chat_id, "👑 <b>ADMIN CONTROL CENTER</b>\nসবকটি নতুন সাইবার-এআই ফিচার ও ফিল্টার চালু রয়েছে।", reply_markup=admin_bottom_keyboard())
 
-    # --- ADVANCED ADMIN DASHBOARDS & EXPORTS ---
     elif text == "📊 স্মার্ট ড্যাশবোর্ড ও রিপোর্ট" and chat_id == ADMIN_ID:
         active_dates = get_active_hold_dates()
         if not active_dates:
@@ -1257,10 +1327,9 @@ def _process_main_router(message):
             
         return bot.send_message(ADMIN_ID, "🏛️ <b>[আর্কাইভ ও হিস্ট্রি ভল্ট]</b>\nপুরোনো যেকোনো তারিখের রিপোর্ট দেখতে বা এক্সপোর্ট করতে ক্লিক করুন:", reply_markup=markup)
 
-    # Worker Helpers & Tools
     elif text == "📜 কাজের ইতিহাস":
         subs = list(submissions_col.find({"chat_id": chat_id}).sort("date_obj", -1).limit(5))
-        if not subs: return bot.send_message(chat_id, "📭 আপনি এখনো কোনো কাজ জমা দেননি!", reply_markup=tasks_and_tools_keyboard())
+        if not subs: return bot.send_message(chat_id, "📭 আপনি এখনো কোনো কাজ জমা দেননি!", reply_markup=account_keyboard())
         out = "📜 <b>আপনার সর্বশেষ জমার ইতিহাস:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         markup = InlineKeyboardMarkup()
         for sub in subs:
@@ -1270,7 +1339,6 @@ def _process_main_router(message):
             if st == "Hold": markup.add(InlineKeyboardButton(f"✏️ এডিট {sub['track_id']}", callback_data=f"edit_sub_{sub['track_id']}"))
         return bot.send_message(chat_id, out, reply_markup=markup)
 
-    # UNLIMITED PROFILE GENERATOR ROUTE
     elif text in ["👤 র্যান্ডম নাম জেনারেটর", "👤 র্যান্ডম প্রোফাইল জেনারেটর"]:
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -1298,19 +1366,14 @@ def _process_main_router(message):
         last_bonus = user.get("last_bonus_date")
         now = get_bd_time()
         
-        if isinstance(last_bonus, str):
-            try: last_bonus = datetime.datetime.fromisoformat(last_bonus)
-            except Exception: last_bonus = None
-            
-        if last_bonus: last_bonus = last_bonus.replace(tzinfo=None)
-        now_naive = now.replace(tzinfo=None)
+        last_bonus_dt = parse_iso_datetime(last_bonus) if last_bonus else None
 
-        if last_bonus and (now_naive - last_bonus) < datetime.timedelta(hours=24):
+        if last_bonus_dt and (now - last_bonus_dt) < datetime.timedelta(hours=24):
             return bot.send_message(chat_id, "⚠️ ২৪ ঘণ্টার মধ্যে একবারই বোনাস নেওয়া যায়!", reply_markup=bonus_support_keyboard())
         else:
             new_bal = float(user.get("balance") or 0.0) + 2.0
             update_user_field(chat_id, "balance", new_bal)
-            update_user_field(chat_id, "last_bonus_date", now)
+            update_user_field(chat_id, "last_bonus_date", now.isoformat())
             return bot.send_message(chat_id, "🎉 আপনি ৳২.০০ বোনাস পেয়েছেন!", reply_markup=bonus_support_keyboard())
 
     elif text == "🏆 লিডারবোর্ড":
@@ -1333,7 +1396,6 @@ def _process_main_router(message):
         buf = generate_worker_badge_image_py(chat_id, safe_name, cnt)
         return bot.send_photo(chat_id, buf, caption="🪪 <b>আপনার ভেরিফাইড আইডি কার্ড!</b>", reply_markup=account_keyboard())
 
-    # Admin Settings Routes
     elif text == "🔑 পাসওয়ার্ড নিয়ম সেট" and chat_id == ADMIN_ID:
         curr_rule = get_setting("pass_rule", "20")
         user_states[chat_id] = {'step': 'AWAITING_ADMIN_PASS_RULE'}
@@ -1380,19 +1442,17 @@ def _process_main_router(message):
     elif text == "🧠 AI সিটেডেল অডিট" and chat_id == ADMIN_ID:
         logs = list(ai_logs_col.find().sort("timestamp", -1).limit(5))
         if not logs: return bot.send_message(ADMIN_ID, "🟢 <b>AI STATUS:</b> 100% HEALTHY\nকোনো এরর বা অটো-হিলিং লগ নেই।", reply_markup=admin_bottom_keyboard())
-        msg = "🧠 <b>Recent AI Auto-Healing Logs:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        for log in logs: msg += f"• <b>{log['timestamp']}</b>\n📌 {log['description']}\n🛠️ {log['action']}\n\n"
+        msg = "🧠 <b>সাম্প্রতিক এআই অটো-হিলিং লগসমূহ:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        for log in logs: msg += f"• <b>{log['timestamp']}</b>\n📌 {log['type']}\n🛠️ {log['action']}\n\n"
         return bot.send_message(ADMIN_ID, msg, reply_markup=admin_bottom_keyboard())
 
     elif text == "📢 ব্রডকাস্ট নোটিশ" and chat_id == ADMIN_ID:
         user_states[chat_id] = {'step': 'AWAITING_BROADCAST_MSG'}
         return bot.send_message(ADMIN_ID, "📢 <b>ব্রডকাস্ট মেসেজটি লিখুন:</b>", reply_markup=cancel_keyboard())
 
-    # DIRECT IN-CHAT USER MANAGER RENDER
     elif text == "👤 ইউজার ম্যানেজার" and chat_id == ADMIN_ID:
         return render_user_manager_page(ADMIN_ID, page=1)
 
-    # Job Submission Navigation
     elif text == "📦 বাল্ক জমা (Text)":
         user_states[chat_id] = {'step': 'AWAITING_BULK_TEXT'}
         return bot.send_message(chat_id, "📦 <b>কুকিজ বা ২এফএ ডেটা লাইন বাই লাইন পেস্ট করুন:</b>", reply_markup=cancel_keyboard())
@@ -1443,7 +1503,9 @@ def _process_main_router(message):
     # ================= DYNAMIC STATE PROCESSING =================
     state = user_states.get(chat_id)
     if not state:
-        if message.text: return bot.send_message(chat_id, "নিচের সাইবার টার্মিনাল থেকে সার্ভিস বেছে নিন:", reply_markup=main_bottom_keyboard(chat_id))
+        if message.text:
+            ai_reply = ask_ai_chatbot(text)
+            return bot.send_message(chat_id, ai_reply, reply_markup=main_bottom_keyboard(chat_id))
         return
 
     step = state.get('step')
@@ -1484,14 +1546,24 @@ def _process_main_router(message):
         user_states.pop(chat_id, None)
         msg_txt = text if text else "Media/File Sent"
         ticket_id = f"TKT-{random.randint(1000,9999)}"
-        bot.send_message(ADMIN_ID, f"🎫 <b>New Support Ticket: {ticket_id}</b>\n👤 User: <code>{chat_id}</code>\n📝 Message:\n{sanitize_html(msg_txt)}")
-        return bot.send_message(chat_id, "✅ আপনার মেসেজ এডমিনের কাছে পাঠানো হয়েছে। খুব শীঘ্রই উত্তর দেওয়া হবে।", reply_markup=main_bottom_keyboard(chat_id))
+        
+        priority, summary = ai_analyze_ticket_sentiment(msg_txt)
+        p_badge = "🔴 [HIGH PRIORITY]" if priority == "High" else "🟢 [NORMAL]"
+
+        admin_alert = (
+            f"🎫 <b>নতুন সাপোর্ট টিকিট: {ticket_id}</b> {p_badge}\n"
+            f"👤 ইউজার ID: <code>{chat_id}</code>\n"
+            f"🤖 এআই সামারি: <i>{summary}</i>\n\n"
+            f"📝 বার্তা:\n{sanitize_html(msg_txt)}"
+        )
+        bot.send_message(ADMIN_ID, admin_alert)
+        return bot.send_message(chat_id, "✅ আপনার বার্তাটি এডমিনের কাছে পাঠানো হয়েছে। খুব শীঘ্রই উত্তর দেওয়া হবে।", reply_markup=main_bottom_keyboard(chat_id))
 
     elif step == 'AWAITING_WITHDRAW_DETAILS':
         user_states.pop(chat_id, None)
         bal = float(user.get("balance") or 0.0)
         try:
-            bot.send_message(ADMIN_ID, f"💸 <b>Withdraw Request!</b>\n👤 User: <code>{chat_id}</code>\n💰 Current Bal: ৳{bal:.2f}\n📝 Details:\n{sanitize_html(text)}")
+            bot.send_message(ADMIN_ID, f"💸 <b>উইথড্র রিকোয়েস্ট!</b>\n👤 ইউজার: <code>{chat_id}</code>\n💰 বর্তমান ব্যালেন্স: ৳{bal:.2f}\n📝 বিবরণ:\n{sanitize_html(text)}")
             bot.send_message(chat_id, "✅ আপনার উইথড্র রিকোয়েস্ট এডমিনের কাছে পাঠানো হয়েছে!", reply_markup=account_keyboard())
         except Exception: pass
         return
@@ -1500,7 +1572,7 @@ def _process_main_router(message):
         track_id = state.get('track_id')
         user_states.pop(chat_id, None)
         submissions_col.update_one({"track_id": track_id}, {"$set": {"payload": text}})
-        return bot.send_message(chat_id, f"✅ <b>Track ID: {track_id}</b> এর তথ্য সফলভাবে আপডেট করা হয়েছে!", reply_markup=tasks_and_tools_keyboard())
+        return bot.send_message(chat_id, f"✅ <b>Track ID: {track_id}</b> এর তথ্য সফলভাবে আপডেট করা হয়েছে!", reply_markup=main_bottom_keyboard(chat_id))
 
     elif step == 'AWAITING_NEW_RATE' and chat_id == ADMIN_ID:
         cat_key = state.get('category_key')
@@ -1546,7 +1618,6 @@ def _process_main_router(message):
         for l in live_list: out += f"<code>{sanitize_html(l)}</code>\n"
         return bot.send_message(chat_id, out, reply_markup=helper_tools_keyboard())
 
-    # Worker Bulk Text Submission
     elif step == 'AWAITING_BULK_TEXT':
         saved_pass = user.get("custom_password")
         p_rule = str(get_setting("pass_rule", "")).strip()
@@ -1725,7 +1796,7 @@ def _process_main_router(message):
 # ================= 9. Production Server Engine =================
 
 if __name__ == "__main__":
-    print("Enterprise OEB NEXUS Cyber Engine Active...")
+    print("Enterprise OEB NEXUS Cyber-AI Engine Active...")
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
     if render_url:
         try:
