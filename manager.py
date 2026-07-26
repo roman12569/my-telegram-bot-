@@ -135,6 +135,13 @@ def parse_iso_datetime(dt_val):
             return get_bd_time()
     return get_bd_time()
 
+def safe_delete_msg(chat_id, message_id):
+    """Safely deletes a message without crashing if already deleted."""
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
 def get_setting(key, default):
     res = settings_col.find_one({"_id": key})
     return res["value"] if res else default
@@ -400,10 +407,12 @@ def get_current_task_rate(cat_key):
     base_rate += get_active_surge_bonus()
     return base_rate
 
-def async_save_to_sheet(tab_name, row_data):
+# OPTIMIZED GOOGLE SHEETS BATCH APPEND (BUG FIX #3)
+def async_save_batch_to_sheet(tab_name, rows_list):
+    """Appends multiple rows in a single API call to avoid 429 Rate Limit errors."""
     def task():
         try:
-            if not os.path.exists(CREDENTIALS_FILE): return
+            if not os.path.exists(CREDENTIALS_FILE) or not rows_list: return
             scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
             creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
             gc = gspread.authorize(creds)
@@ -411,10 +420,15 @@ def async_save_to_sheet(tab_name, row_data):
             try:
                 worksheet = sheet.worksheet(tab_name)
             except gspread.exceptions.WorksheetNotFound:
-                worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=len(row_data)+2)
-            worksheet.append_row(row_data)
-        except Exception: pass
+                cols_count = max(len(r) for r in rows_list) + 2
+                worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=cols_count)
+            worksheet.append_rows(rows_list)
+        except Exception as e:
+            log_ai_report("Google Sheet Batch Error", str(e), "Check credentials.json and Share permission on Sheet.")
     threading.Thread(target=task, daemon=True).start()
+
+def async_save_to_sheet(tab_name, row_data):
+    async_save_batch_to_sheet(tab_name, [row_data])
 
 def async_create_sheet_tab(tab_name, fields):
     """Automatically creates a new worksheet tab in Google Sheets with headers."""
@@ -726,6 +740,21 @@ def _process_callbacks(call):
             bot.delete_message(chat_id, call.message.message_id)
             bot.send_message(chat_id, "✅ ভেরিফিকেশন সফল হয়েছে!", reply_markup=main_bottom_keyboard(chat_id))
         else: bot.send_message(chat_id, "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি!")
+
+    # --- BUG FIX #5: MULTI-STEP WITHDRAWAL METHOD CALLBACKS ---
+    elif code.startswith("w_method_"):
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        method = code.replace("w_method_", "")
+        method_name = "bKash" if method == "bkash" else "Binance Pay ID"
+        
+        user_states[chat_id] = {
+            'step': 'AWAITING_WITHDRAW_ACCOUNT',
+            'method': method_name
+        }
+        
+        prompt = f"📱 <b>আপনার {method_name} নাম্বার/আইডিটি লিখুন:</b>" if method == "bkash" else f"🔶 <b>আপনার {method_name} টি টাইপ করুন:</b>"
+        bot.edit_message_text(prompt, chat_id, call.message.message_id)
 
     elif code == "trigger_add_cat" and chat_id == ADMIN_ID:
         try: bot.answer_callback_query(call.id)
@@ -1142,7 +1171,7 @@ def _process_document(message):
                 "আপনার এক্সেল ফাইলের জন্য ডিফল্ট পাসওয়ার্ডটি গ্রহণ করা হয়নি!",
                 f"পাসওয়ার্ডটির (<code>{sanitize_html(password_to_use)}</code>) একদম শেষে আজকের সিকিউরিটি কোড '<code>{sanitize_html(p_rule)}</code>' অনুপস্থিত।",
                 f"একাউন্ট খোলার সময়ই পাসওয়ার্ডের 'একদম শেষে' '<code>{sanitize_html(p_rule)}</code>' বসিয়ে একাউন্ট খুলুন এবং সেই পাসওয়ার্ডটি সেভ করুন। ভুল পাসওয়ার্ড দিলে একাউন্ট ব্যাক/রিজেক্ট হবে!",
-                "আইডি খোলার আগেই '⚙️ পাসওয়ার্ড নিয়ম' সেকশনে গিয়ে আজকের সিকিউরিটি কোড মেনে পাসওয়ার্ড সেভ করে ফাইল আপলোড দিন।"
+                "আইডি খোলার আগেই '⚙️ পাসওয়ার্ড নিয়ম' সেকশনে গিয়ে আজকের সিকিউরিটি কোড মেনে পাসওয়ার্ড সেভ করে ফাইল আপলোড দিন."
             )
             return bot.reply_to(message, ai_warn, reply_markup=submit_tasks_keyboard())
 
@@ -1161,6 +1190,8 @@ def _process_document(message):
         success_count, total_earned = 0, 0.0
         now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
         date_key = now_time.strftime("%Y-%m-%d")
+        
+        sheet_rows = []
 
         for _, row in df.iterrows():
             vals = [str(x).strip() for x in row.values]
@@ -1177,7 +1208,8 @@ def _process_document(message):
                 rate = float(get_current_task_rate(cat_key))
                 track_id = generate_tracking_id()
 
-                async_save_to_sheet("Cookies_Data" if "cookie" in cat_key else "2FA_Data", [now_str, track_id, str(chat_id), uid, password, payload])
+                sheet_rows.append([now_str, track_id, str(chat_id), uid, password, payload])
+
                 submissions_col.insert_one({
                     "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
                     "password": password, "payload": payload, "payload_hash": p_hash, "track_id": track_id,
@@ -1185,10 +1217,10 @@ def _process_document(message):
                     "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
                 })
                 success_count += 1; total_earned += rate
-                
-                try:
-                    bot.send_message(LOG_CHANNEL_ID, f"📥 <b>NEW SUBMISSION (Excel)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}")
-                except Exception: pass
+
+        # BUG FIX #3: Batch append to Google Sheets
+        if sheet_rows:
+            async_save_batch_to_sheet("Cookies_Data", sheet_rows)
 
         backup_file_buf = io.BytesIO(file_downloaded_bytes)
         send_private_backup_message(
@@ -1247,8 +1279,8 @@ def _process_main_router(message):
             return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে 'কাজ জমা' মেনুতে ফিরে আসা হয়েছে।", reply_markup=submit_tasks_keyboard())
         elif step in ['AWAITING_2FA_GEN', 'AWAITING_BULK_FB_CHECK', 'AWAITING_BULK_IG_CHECK']:
             return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে 'টুলস' মেনুতে ফিরে আসা হয়েছে।", reply_markup=helper_tools_keyboard())
-        elif step == 'AWAITING_WITHDRAW_DETAILS':
-            return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করা হয়েছে।", reply_markup=account_keyboard())
+        elif step in ['AWAITING_WITHDRAW_ACCOUNT', 'AWAITING_WITHDRAW_AMOUNT']:
+            return bot.send_message(chat_id, "❌ উইথড্র প্রক্রিয়া বাতিল করা হয়েছে।", reply_markup=account_keyboard())
         elif step in ['AWAITING_BROADCAST_MSG', 'AWAITING_BUYER_REPORT', 'AWAITING_NEW_RATE', 'AWAITING_ADMIN_PASS_RULE', 'AWAITING_NEW_CAT_NAME', 'AWAITING_NEW_CAT_FIELDS', 'AWAITING_NEW_CAT_RATE', 'AWAITING_CUSTOM_CAT_RATE_EDIT']:
             return bot.send_message(chat_id, "❌ প্রক্রিয়া বাতিল করে এডমিন প্যানেলে ফিরে আসা হয়েছে।", reply_markup=admin_bottom_keyboard())
         elif step == 'AWAITING_SUPPORT_MSG':
@@ -1305,6 +1337,19 @@ def _process_main_router(message):
 
     elif text in ["👑 এডমিন কন্ট্রোল সেন্টার", "👑 এডমিন প্যানেল"] and chat_id == ADMIN_ID:
         return bot.send_message(chat_id, "👑 <b>ADMIN CONTROL CENTER</b>\nসবকটি নতুন সাইবার-এআই ফিচার ও ফিল্টার চালু রয়েছে।", reply_markup=admin_bottom_keyboard())
+
+    # --- BUG FIX #5: SMART MULTI-STEP WITHDRAWAL INITIATION ---
+    elif text == "💳 Withdraw":
+        bal = float(user.get("balance") or 0.0)
+        if bal < 50.0: 
+            return bot.send_message(chat_id, f"⚠️ <b>সর্বনিম্ন উইথড্র ৳৫০.০০ BDT!</b>\n\n💳 আপনার বর্তমান ব্যালেন্স: <b>৳{bal:.2f} BDT</b>", reply_markup=account_keyboard())
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("📱 বিকাশ (bKash)", callback_data="w_method_bkash"),
+            InlineKeyboardButton("🔶 বাইনান্স (Binance ID)", callback_data="w_method_binance")
+        )
+        return bot.send_message(chat_id, f"💳 <b>উইথড্র মেথড সিলেক্ট করুন:</b>\n\n💰 আপনার উত্তোলনে যোগ্য ব্যালেন্স: <b>৳{bal:.2f} BDT</b>", reply_markup=markup)
 
     elif text == "⚙️ কাস্টম ক্যাটাগরি প্যানেল" and chat_id == ADMIN_ID:
         custom_cats = get_setting("custom_categories", {})
@@ -1426,12 +1471,6 @@ def _process_main_router(message):
     elif text == "💬 এডমিন সাপোর্ট টিকিট":
         user_states[chat_id] = {'step': 'AWAITING_SUPPORT_MSG'}
         return bot.send_message(chat_id, "💬 <b>আপনার বার্তাটি লিখুন:</b>", reply_markup=cancel_keyboard())
-
-    elif text == "💳 Withdraw":
-        bal = float(user.get("balance") or 0.0)
-        if bal < 50.0: return bot.send_message(chat_id, f"⚠️ সর্বনিম্ন উইথড্র ৳৫০.০০। ব্যালেন্স: ৳{bal:.2f}", reply_markup=account_keyboard())
-        user_states[chat_id] = {'step': 'AWAITING_WITHDRAW_DETAILS'}
-        return bot.send_message(chat_id, "💳 বিকাশ/নগদ নাম্বার ও পরিমাণ লিখুন (যেমন: <code>01700000000 | 100</code>):", reply_markup=cancel_keyboard())
 
     elif text == "🪪 ভেরিফাইড আইডি কার্ড":
         safe_name = sanitize_html(message.from_user.first_name)
@@ -1578,8 +1617,84 @@ def _process_main_router(message):
 
     step = state.get('step')
 
+    # --- BUG FIX #5: MULTI-STEP WITHDRAWAL PROCESSORS ---
+    if step == 'AWAITING_WITHDRAW_ACCOUNT':
+        method_name = state.get('method', 'bKash')
+        account_no = text.strip()
+        
+        safe_delete_msg(chat_id, message.message_id) # Clean UI
+
+        user_states[chat_id] = {
+            'step': 'AWAITING_WITHDRAW_AMOUNT',
+            'method': method_name,
+            'account': account_no
+        }
+        
+        bal = float(user.get("balance") or 0.0)
+        return bot.send_message(
+            chat_id, 
+            f"✅ <b>মেথড:</b> {method_name}\n"
+            f"📌 <b>অ্যাকোউন্ট:</b> <code>{sanitize_html(account_no)}</code>\n\n"
+            f"💰 <b>কত টাকা উইথড্র করতে চান লিখুন:</b>\n"
+            f"(সর্বনিম্ন: ৳৫০.০০ | আপনার ব্যালেন্স: ৳{bal:.2f})", 
+            reply_markup=cancel_keyboard()
+        )
+
+    elif step == 'AWAITING_WITHDRAW_AMOUNT':
+        method_name = state.get('method', 'bKash')
+        account_no = state.get('account', '')
+        
+        safe_delete_msg(chat_id, message.message_id) # Clean UI
+
+        try:
+            req_amount = float(text.strip())
+        except ValueError:
+            return bot.send_message(chat_id, "❌ <b>ভুল অ্যামাউন্ট!</b> শুধুমাত্র সংখ্যা লিখুন (যেমন: 100):", reply_markup=cancel_keyboard())
+
+        bal = float(user.get("balance") or 0.0)
+
+        if req_amount < 50.0:
+            return bot.send_message(chat_id, "⚠️ <b>সর্বনিম্ন উইথড্র পরিমাণ ৳৫০.০০ BDT!</b>\nআবার চেষ্টা করুন:", reply_markup=cancel_keyboard())
+
+        if req_amount > bal:
+            return bot.send_message(chat_id, f"❌ <b>পর্যাপ্ত ব্যালেন্স নেই!</b>\nআপনার বর্তমান ব্যালেন্স: ৳{bal:.2f} BDT", reply_markup=cancel_keyboard())
+
+        user_states.pop(chat_id, None)
+
+        # Deduct balance from user
+        new_balance = bal - req_amount
+        update_user_field(chat_id, "balance", new_balance)
+
+        now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Admin Alert
+        admin_alert = (
+            f"💸 <b>NEW WITHDRAWAL REQUEST!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>Worker ID:</b> <code>#{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
+            f"💳 <b>Method:</b> {method_name}\n"
+            f"📱 <b>Account/Pay ID:</b> <code>{sanitize_html(account_no)}</code>\n"
+            f"💰 <b>Amount:</b> <b>৳{req_amount:.2f} BDT</b>\n"
+            f"💼 <b>Remaining Balance:</b> ৳{new_balance:.2f} BDT\n"
+            f"⏰ <b>Time:</b> {now_str}"
+        )
+        try: bot.send_message(ADMIN_ID, admin_alert)
+        except Exception: pass
+
+        # User Confirmation
+        return bot.send_message(
+            chat_id, 
+            f"🎉 <b>উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💳 <b>মেথড:</b> {method_name}\n"
+            f"📱 <b>অ্যাকাউন্ট:</b> <code>{sanitize_html(account_no)}</code>\n"
+            f"💰 <b>পরিমাণ:</b> ৳{req_amount:.2f} BDT\n\n"
+            f"⏳ এডমিন শীঘ্রই আপনার পেমেন্ট প্রসেস করবেন। ধন্যবাদ!", 
+            reply_markup=account_keyboard()
+        )
+
     # --- ADMIN: Dynamic Category Creation Steps ---
-    if step == 'AWAITING_NEW_CAT_NAME' and chat_id == ADMIN_ID:
+    elif step == 'AWAITING_NEW_CAT_NAME' and chat_id == ADMIN_ID:
         cat_name = text.strip()
         state['new_cat_name'] = cat_name
         state['step'] = 'AWAITING_NEW_CAT_FIELDS'
@@ -1625,6 +1740,8 @@ def _process_main_router(message):
 
     # --- USER: Custom Category Submissions ---
     elif step == 'AWAITING_CUSTOM_FIELD':
+        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
+
         cat_key = state.get('cat_key')
         fields = state.get('fields', [])
         idx = state.get('current_field_idx', 0)
@@ -1747,15 +1864,6 @@ def _process_main_router(message):
         bot.send_message(ADMIN_ID, admin_alert)
         return bot.send_message(chat_id, "✅ আপনার বার্তাটি এডমিনের কাছে পাঠানো হয়েছে। খুব শীঘ্রই উত্তর দেওয়া হবে।", reply_markup=main_bottom_keyboard(chat_id))
 
-    elif step == 'AWAITING_WITHDRAW_DETAILS':
-        user_states.pop(chat_id, None)
-        bal = float(user.get("balance") or 0.0)
-        try:
-            bot.send_message(ADMIN_ID, f"💸 <b>উইথড্র রিকোয়েস্ট!</b>\n👤 ইউজার: <code>{chat_id}</code>\n💰 বর্তমান ব্যালেন্স: ৳{bal:.2f}\n📝 বিবরণ:\n{sanitize_html(text)}")
-            bot.send_message(chat_id, "✅ আপনার উইথড্র রিকোয়েস্ট এডমিনের কাছে পাঠানো হয়েছে!", reply_markup=account_keyboard())
-        except Exception: pass
-        return
-
     elif step == 'AWAITING_EDIT_PAYLOAD':
         track_id = state.get('track_id')
         user_states.pop(chat_id, None)
@@ -1806,6 +1914,7 @@ def _process_main_router(message):
         for l in live_list: out += f"<code>{sanitize_html(l)}</code>\n"
         return bot.send_message(chat_id, out, reply_markup=helper_tools_keyboard())
 
+    # --- BUG FIX #1, #2, #3, #4: BULK SUBMISSION FULL REHAUL ---
     elif step == 'AWAITING_BULK_TEXT':
         saved_pass = user.get("custom_password")
         p_rule = str(get_setting("pass_rule", "@21")).strip()
@@ -1821,27 +1930,42 @@ def _process_main_router(message):
             )
             return bot.send_message(chat_id, ai_warn, reply_markup=submit_tasks_keyboard())
 
+        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
         user_states.pop(chat_id, None)
+
         lines = [l.strip() for l in text.split("\n") if l.strip()]
-        success_list, dup_list, total_earned = [], [], 0.0
+        success_list, rejected_list = [], []
+        sheet_rows = []
+        total_earned = 0.0
+
         now_time = get_bd_time()
         now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
         date_key = now_time.strftime("%Y-%m-%d")
 
+        valid_raw_payloads = []
+
         for line in lines:
             uid = extract_numeric_uid(line)
-            if not uid: continue
-            if is_duplicate_uid(uid):
-                dup_list.append(uid)
+            if not uid:
+                rejected_list.append((line[:20] + "...", "ভুল ইউআইডি / ফরম্যাট এরর"))
                 continue
+            if is_duplicate_uid(uid):
+                rejected_list.append((uid, "ডুপ্লিকেট একাউন্ট (ইতিমধ্যে জমা দেওয়া হয়েছে)"))
+                continue
+            
             p_hash = generate_payload_hash(line)
-            if is_payload_blacklisted(p_hash): continue
+            if is_payload_blacklisted(p_hash):
+                rejected_list.append((uid, "ব্ল্যাকলিস্টেড বা বাতিলকৃত ডাটা"))
+                continue
+
             cat_key = "fb_cookie" if is_valid_cookies(line) else "fb_2fa"
             cat_display = CAT_MAP.get(cat_key, "FB Cookies")
             rate = float(get_current_task_rate(cat_key))
             track_id = generate_tracking_id()
 
-            async_save_to_sheet("Cookies_Data" if "cookie" in cat_key else "2FA_Data", [now_str, track_id, str(chat_id), uid, password_to_use, line])
+            sheet_rows.append([now_str, track_id, str(chat_id), uid, password_to_use, line])
+            valid_raw_payloads.append(line)
+
             submissions_col.insert_one({
                 "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
                 "password": password_to_use, "payload": line, "payload_hash": p_hash,
@@ -1854,20 +1978,45 @@ def _process_main_router(message):
                 bot.send_message(LOG_CHANNEL_ID, f"📥 <b>NEW SUBMISSION (Bulk Text)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}")
             except Exception: pass
 
-        safe_raw_text = sanitize_html(text[:2500])
-        send_private_backup_message(
-            f"📦 <b>[PRIVATE BACKUP - Bulk Text Submission]</b>\n"
-            f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
-            f"🔑 Pass: <code>{sanitize_html(password_to_use)}</code> | ✅ Valid: <b>{len(success_list)}</b> টি | 💰 Hold: ৳{total_earned:.2f}\n\n"
-            f"📄 <b>Raw Text:</b>\n<code>{safe_raw_text}</code>"
-        )
+        # BUG FIX #3: Batch append to Google Sheets
+        if sheet_rows:
+            async_save_batch_to_sheet("Cookies_Data", sheet_rows)
+
+        # BUG FIX #2: Send ONLY 100% Accepted Data to Private Backup Channel
+        if len(success_list) > 0:
+            valid_payload_text = "\n".join(valid_raw_payloads)
+            safe_raw_text = sanitize_html(valid_payload_text[:2500])
+            send_private_backup_message(
+                f"📦 <b>[PRIVATE BACKUP - Bulk Text Submission]</b>\n"
+                f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
+                f"🔑 Pass: <code>{sanitize_html(password_to_use)}</code> | ✅ Valid: <b>{len(success_list)}</b> টি | 💰 Hold: ৳{total_earned:.2f}\n\n"
+                f"📄 <b>Accepted Raw Data:</b>\n<code>{safe_raw_text}</code>"
+            )
 
         users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
-        out = f"🎉 <b>বাল্ক সাবমিশন সম্পন্ন!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ সফল: {len(success_list)} টি | ⚠️ স্কিপড/ডুপ্লিকেট: {len(dup_list)} টি\n💰 আর্ন (এসক্রো হোল্ড): ৳{total_earned:.2f}\n\n🟢 <b>ACCEPTED UID LIST:</b>\n"
-        for s in success_list: out += f"<code>{s}</code>\n"
+
+        # BUG FIX #1: Detailed Output with Rejection Reasons
+        out = f"🎉 <b>বাল্ক সাবমিশন রিপোর্ট!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        out += f"✅ <b>গৃহীত একাউন্ট:</b> {len(success_list)} টি\n"
+        out += f"❌ <b>বাতিলকৃত একাউন্ট:</b> {len(rejected_list)} টি\n"
+        out += f"💰 <b>আর্ন (এসক্রো হোল্ড):</b> ৳{total_earned:.2f} BDT\n\n"
+
+        if success_list:
+            out += "🟢 <b>ACCEPTED UID LIST:</b>\n"
+            for s in success_list[:15]: out += f"• <code>{s}</code>\n"
+            if len(success_list) > 15: out += f"<i>...এবং আরও {len(success_list)-15} টি</i>\n"
+
+        if rejected_list:
+            out += "\n🔴 <b>REJECTED DETAILS:</b>\n"
+            for r_item, r_reason in rejected_list[:10]:
+                out += f"• <code>{r_item}</code> — <i>{r_reason}</i>\n"
+            if len(rejected_list) > 10: out += f"<i>...এবং আরও {len(rejected_list)-10} টি বাতিল</i>\n"
+
         return bot.send_message(chat_id, out, reply_markup=submit_tasks_keyboard())
 
     elif step == 'AWAITING_UID':
+        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
+
         uid = extract_numeric_uid(text)
         if not uid or is_duplicate_uid(uid): return bot.send_message(chat_id, "❌ ভুল বা ডুপ্লিকেট UID!")
         cat = state.get('category', 'fb_cookie')
@@ -1876,6 +2025,8 @@ def _process_main_router(message):
         return bot.send_message(chat_id, f"✅ Verified UID: <code>{uid}</code>\n\n{prompt}", reply_markup=cancel_keyboard())
 
     elif step == 'AWAITING_SINGLE_DATA':
+        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
+
         cat, uid = state.get('category', 'fb_cookie'), state.get('uid')
         saved_pass = user.get("custom_password")
         p_rule = str(get_setting("pass_rule", "@21")).strip()
@@ -1935,6 +2086,8 @@ def _process_main_router(message):
             return bot.send_message(chat_id, prompt_msg, reply_markup=cancel_keyboard())
 
     elif step == 'AWAITING_MANUAL_PASSWORD':
+        safe_delete_msg(chat_id, message.message_id) # BUG FIX #4: Clean UI Auto Delete
+
         cat = state.get('category', 'fb_cookie')
         uid = state.get('uid')
         payload = state.get('payload')
