@@ -51,13 +51,14 @@ try:
 except Exception:
     BOT_USERNAME = "online_bazar_manager_bot"
 
-# MongoDB Connection Pool
+# MongoDB Connection Pool Optimized for Ultra-Fast Connections
 mongo_client = MongoClient(
     MONGO_URL,
-    maxPoolSize=300,
+    maxPoolSize=500,
     minPoolSize=50,
-    maxIdleTimeMS=45000,
-    connectTimeoutMS=10000
+    maxIdleTimeMS=30000,
+    connectTimeoutMS=5000,
+    socketTimeoutMS=5000
 )
 db = mongo_client['earning_bazar_advanced']
 
@@ -69,7 +70,7 @@ withdrawals_col = db['withdrawals']
 blacklisted_payloads_col = db['blacklisted_payloads']
 ai_logs_col = db['ai_logs']
 
-# Strict Unique Indexing on UID to Prevent Race Condition Duplicates
+# Strict Unique Indexing on UID
 try:
     submissions_col.create_index("track_id", unique=True, background=True)
     submissions_col.create_index("uid", unique=True, background=True)
@@ -85,10 +86,9 @@ REQUIRED_CHANNELS = [
     {"name": "Earning Shop", "username": "@onlineearningshop01", "url": "https://t.me/onlineearningshop01"}
 ]
 
-# Timezone definition for Bangladesh (UTC+6)
 BD_TIMEZONE = timezone(timedelta(hours=6))
 
-# Safe Bounded Executor with Dedicated Single Overflow Thread
+# High-Performance Thread Executor
 class SafeBoundedExecutor:
     def __init__(self, max_workers, max_queue):
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
@@ -123,9 +123,9 @@ class SafeBoundedExecutor:
             except queue.Full:
                 pass 
 
-background_executor = SafeBoundedExecutor(max_workers=20, max_queue=5000)
+background_executor = SafeBoundedExecutor(max_workers=50, max_queue=10000)
 
-# Fully Thread-Safe LRU Cache in MongoDict
+# Fully Thread-Safe In-Memory Cache
 class MongoDict:
     def __init__(self, collection, max_cache_size=10000):
         self.col = collection
@@ -184,7 +184,6 @@ class MongoDict:
 
 user_states = MongoDict(db['user_states'])
 
-# Dynamic Category Mapping Dictionary
 CAT_MAP = {
     "fb_cookie": "FB Cookies",
     "fb_2fa": "FB 2FA",
@@ -192,29 +191,11 @@ CAT_MAP = {
     "ig_2fa": "IG 2FA"
 }
 
-# Dynamic Dataset for Profile Generation
-BD_FIRST_NAMES = [
-    "Sakib", "Tanvir", "Rahim", "Rakib", "Nayeem", "Ariful", "Mehedi", "Mahfuz", 
-    "Farhan", "Ashfaq", "Sumon", "Imran", "Hasib", "Shahadat", "Rayhan", "Tasnim", 
-    "Nusrat", "Riya", "Sadia", "Mim", "Farhana", "Sultana", "Anik", "Sabbir", 
-    "Fahim", "Jubayer", "Naim", "Tariq", "Zubair", "Alim", "Shakil", "Mahmud"
-]
-BD_LAST_NAMES = [
-    "Hasan", "Ahmed", "Uddin", "Islam", "Khan", "Chowdhury", "Rahman", "Hossain", 
-    "Sheikh", "Mahmud", "Sarkar", "Miah", "Akter", "Siddique", "Bhuiyan", "Kabir", "Ali", "Alam"
-]
+BD_FIRST_NAMES = ["Sakib", "Tanvir", "Rahim", "Rakib", "Nayeem", "Ariful", "Mehedi", "Mahfuz", "Farhan", "Ashfaq", "Sumon", "Imran", "Hasib", "Shahadat", "Rayhan", "Tasnim", "Nusrat", "Riya", "Sadia", "Mim", "Farhana", "Sultana", "Anik", "Sabbir", "Fahim", "Jubayer", "Naim", "Tariq", "Zubair", "Alim", "Shakil", "Mahmud"]
+BD_LAST_NAMES = ["Hasan", "Ahmed", "Uddin", "Islam", "Khan", "Chowdhury", "Rahman", "Hossain", "Sheikh", "Mahmud", "Sarkar", "Miah", "Akter", "Siddique", "Bhuiyan", "Kabir", "Ali", "Alam"]
 
-USA_FIRST_NAMES = [
-    "James", "John", "Robert", "Michael", "William", "David", "Richard", "Joseph", 
-    "Thomas", "Charles", "Daniel", "Matthew", "Anthony", "Mark", "Steven", "Paul", 
-    "Andrew", "Joshua", "Kenneth", "Kevin", "Mary", "Patricia", "Jennifer", "Linda", 
-    "Elizabeth", "Barbara", "Susan", "Jessica", "Sarah", "Karen", "Nancy", "Lisa", "Sandra"
-]
-USA_LAST_NAMES = [
-    "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", 
-    "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", 
-    "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson", "White", "Harris"
-]
+USA_FIRST_NAMES = ["James", "John", "Robert", "Michael", "William", "David", "Richard", "Joseph", "Thomas", "Charles", "Daniel", "Matthew", "Anthony", "Mark", "Steven", "Paul", "Andrew", "Joshua", "Kenneth", "Kevin", "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth", "Barbara", "Susan", "Jessica", "Sarah", "Karen", "Nancy", "Lisa", "Sandra"]
+USA_LAST_NAMES = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson", "White", "Harris"]
 
 # ================= 2. Helper Functions =================
 
@@ -239,6 +220,9 @@ def parse_iso_datetime(dt_val):
     return get_bd_time()
 
 def safe_delete_msg(chat_id, message_id):
+    background_executor.submit(lambda: _async_safe_delete(chat_id, message_id))
+
+def _async_safe_delete(chat_id, message_id):
     try:
         bot.delete_message(chat_id, message_id)
     except Exception:
@@ -260,20 +244,19 @@ def get_active_surge_bonus():
     return 0.0
 
 def log_ai_report(issue_type, description, fix_action):
-    now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
-    ai_logs_col.insert_one({"timestamp": now_str, "type": issue_type, "description": description, "action": fix_action})
-    
-    audit_msg = (
-        f"🧠 <b>AI AUTO-HEALING & AUDIT REPORT</b>\n\n"
-        f"• <b>Time:</b> {now_str}\n"
-        f"• <b>Issue:</b> {issue_type}\n\n"
-        f"🔍 <b>Description:</b>\n{description[:150]}\n\n"
-        f"🛠️ <b>Action Taken:</b>\n{fix_action[:150]}"
-    )
-    try: 
-        bot.send_message(ADMIN_ID, audit_msg)
-    except Exception: 
-        pass
+    def task():
+        now_str = get_bd_time().strftime("%Y-%m-%d %H:%M:%S")
+        ai_logs_col.insert_one({"timestamp": now_str, "type": issue_type, "description": description, "action": fix_action})
+        audit_msg = (
+            f"🧠 <b>AI AUTO-HEALING & AUDIT REPORT</b>\n\n"
+            f"• <b>Time:</b> {now_str}\n"
+            f"• <b>Issue:</b> {issue_type}\n\n"
+            f"🔍 <b>Description:</b>\n{description[:150]}\n\n"
+            f"🛠️ <b>Action Taken:</b>\n{fix_action[:150]}"
+        )
+        try: bot.send_message(ADMIN_ID, audit_msg)
+        except Exception: pass
+    background_executor.submit(task)
 
 def generate_strict_ai_warning(issue, cause, solution, prevention):
     return (
@@ -398,7 +381,7 @@ def broadcast_password_rule_notice(new_rule):
         for u in all_users:
             try:
                 bot.send_message(u["_id"], notice_text)
-                time.sleep(0.05)
+                time.sleep(0.04)
             except ApiTelegramException as e:
                 if e.error_code == 429:
                     time.sleep(e.result_json.get('parameters', {}).get('retry_after', 3))
@@ -426,7 +409,7 @@ def get_user_data(chat_id):
     return user
 
 def update_user_field(chat_id, field, value):
-    users_col.update_one({"_id": chat_id}, {"$set": {field: value}}, upsert=True)
+    background_executor.submit(lambda: users_col.update_one({"_id": chat_id}, {"$set": {field: value}}, upsert=True))
 
 def is_user_banned(chat_id):
     user = users_col.find_one({"_id": chat_id})
@@ -457,13 +440,6 @@ def generate_payload_hash(payload_str):
 def is_payload_blacklisted(payload_hash):
     return blacklisted_payloads_col.find_one({"_id": payload_hash}) is not None
 
-def add_to_payload_blacklist(payload_hash, reason="Dead Cookie/2FA"):
-    blacklisted_payloads_col.update_one(
-        {"_id": payload_hash},
-        {"$set": {"reason": reason, "added_at": get_bd_time()}},
-        upsert=True
-    )
-
 def extract_numeric_uid(text):
     text = str(text).strip()
     c_user_match = re.search(r'c_user=(\d{8,20})', text)
@@ -478,25 +454,40 @@ def is_valid_cookies(cookie_str):
     c_str = str(cookie_str)
     return ("c_user=" in c_str) or ("datr=" in c_str) or ("xs=" in c_str) or ("sessionid=" in c_str)
 
+# ⚡ ACCURATE ULTRA-FAST LIVE CHECKER ENGINE
 def check_live_account(uid):
     try:
         clean_uid = extract_numeric_uid(uid)
         if not clean_uid: return False, "Invalid UID format"
-        url = f"https://www.facebook.com/{clean_uid}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            if "content=\"no-cache\"" in res.text or "The page you requested cannot be displayed" in res.text: return False, "Checkpoint/Dead"
+        
+        url = f"https://m.facebook.com/profile.php?id={clean_uid}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-A705FN) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.5"
+        }
+        res = requests.get(url, headers=headers, timeout=3.5, allow_redirects=True)
+        content = res.text.lower()
+        
+        if res.status_code != 200:
+            return False, "Suspended/Dead"
+            
+        if "content=\"no-cache\"" in content or "the page you requested cannot be displayed" in content or "not found" in content or "unavailable" in content or "login" in res.url:
+            if "c_user" not in res.url and clean_uid not in res.url:
+                return False, "Checkpoint/Dead"
+                
+        if "profile_ring" in content or "mbasic_inline_feed_composer" in content or clean_uid in res.url:
             return True, "Live Account"
+            
         return False, "Suspended/Dead"
-    except Exception: return True, "Assumed Live"
+    except Exception:
+        return False, "Dead / Timeout"
 
 def check_ig_username_live(username):
     try:
         clean_user = username.replace("@", "").strip()
         url = f"https://www.instagram.com/{clean_user}/"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=headers, timeout=3.5)
         if res.status_code == 200 and "Page Not Found" not in res.text: return True, "Live Instagram Profile"
         return False, "Dead / Suspended"
     except Exception: return True, "Assumed Live"
@@ -797,8 +788,7 @@ def send_welcome(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_all_callbacks(call):
-    try: _process_callbacks(call)
-    except Exception as e: log_ai_report("Callback Error", f"Failed on {call.data}: {str(e)}", "Silenced to prevent crash.")
+    background_executor.submit(lambda: _process_callbacks(call))
 
 def _process_callbacks(call):
     chat_id = call.message.chat.id
@@ -1179,10 +1169,7 @@ def _process_callbacks(call):
 # --- FILE/DOCUMENT ROUTER ---
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
-    try: _process_document(message)
-    except Exception as e:
-        log_ai_report("File Parse Error", str(e), "Caught exception gracefully.")
-        bot.reply_to(message, "❌ ফাইলটি পড়তে সমস্যা হয়েছে। দয়া করে সঠিক ফরম্যাটে ফাইল দিন.", reply_markup=main_bottom_keyboard(message.chat.id))
+    background_executor.submit(lambda: _process_document(message))
 
 def _process_document(message):
     chat_id = message.chat.id
@@ -1245,7 +1232,7 @@ def _process_document(message):
             for worker_id, text_msg in notification_list:
                 try:
                     bot.send_message(worker_id, text_msg)
-                    time.sleep(0.05)
+                    time.sleep(0.04)
                 except ApiTelegramException as e:
                     if e.error_code == 429:
                         time.sleep(e.result_json.get('parameters', {}).get('retry_after', 3))
@@ -1290,12 +1277,10 @@ def _process_document(message):
 
         df = pd.read_csv(unique_file_name, dtype=str) if unique_file_name.endswith('.csv') else pd.read_excel(unique_file_name, dtype=str)
         df = df.fillna('')
-        success_count, total_earned = 0, 0.0
         now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
         date_key = now_time.strftime("%Y-%m-%d")
-        
-        sheet_rows = []
 
+        candidates = []
         for _, row in df.iterrows():
             vals = [str(x).strip() for x in row.values]
             uid, password, payload = None, password_to_use, None
@@ -1305,43 +1290,63 @@ def _process_document(message):
 
             if uid and payload and not is_duplicate_uid(uid):
                 p_hash = generate_payload_hash(payload)
-                if is_payload_blacklisted(p_hash): continue
-                cat_key = "fb_cookie" if is_valid_cookies(payload) else "fb_2fa"
-                cat_display = CAT_MAP.get(cat_key, "FB Cookies")
-                rate = float(get_current_task_rate(cat_key))
-                track_id = generate_tracking_id()
-
-                try:
-                    submissions_col.insert_one({
-                        "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
-                        "password": password, "payload": payload, "payload_hash": p_hash, "track_id": track_id,
-                        "category": cat_display, "category_key": cat_key,
-                        "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                if not is_payload_blacklisted(p_hash):
+                    cat_key = "fb_cookie" if is_valid_cookies(payload) else "fb_2fa"
+                    candidates.append({
+                        "uid": uid, "password": password, "payload": payload,
+                        "payload_hash": p_hash, "cat_key": cat_key
                     })
-                    sheet_rows.append([now_str, track_id, str(chat_id), uid, password, payload])
-                    success_count += 1; total_earned += rate
-                except DuplicateKeyError:
-                    continue
+
+        # 🚀 ULTRA-FAST PARALLEL LIVE CHECK ENGINE FOR EXCEL
+        def _check_cand(c):
+            if c["cat_key"] in ["fb_cookie", "fb_2fa"]:
+                is_live, _ = check_live_account(c["uid"])
+                c["is_live"] = is_live
+            else:
+                c["is_live"] = True
+            return c
+
+        success_count, total_earned = 0, 0.0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
+            verified_candidates = list(executor.map(_check_cand, candidates))
+
+        for item in verified_candidates:
+            if not item.get("is_live"):
+                continue
+
+            cat_display = CAT_MAP.get(item["cat_key"], "FB Cookies")
+            rate = float(get_current_task_rate(item["cat_key"]))
+            track_id = generate_tracking_id()
+
+            try:
+                submissions_col.insert_one({
+                    "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": item["uid"],
+                    "password": item["password"], "payload": item["payload"], "payload_hash": item["payload_hash"], "track_id": track_id,
+                    "category": cat_display, "category_key": item["cat_key"],
+                    "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                })
+                success_count += 1; total_earned += rate
+            except DuplicateKeyError:
+                continue
 
         backup_file_buf = io.BytesIO(file_downloaded_bytes)
         send_private_backup_message(
             f"📊 <b>[PRIVATE BACKUP - Excel Submission]</b>\n"
             f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
             f"📁 File: <code>{sanitize_html(orig_file_name)}</code> | 🔑 Pass: <code>{sanitize_html(password_to_use)}</code>\n"
-            f"✅ Valid: <b>{success_count}</b> টি | 💰 Hold: ৳{total_earned:.2f}",
+            f"✅ Valid Live: <b>{success_count}</b> টি | 💰 Hold: ৳{total_earned:.2f}",
             doc_buf=backup_file_buf,
             doc_name=f"Backup_{date_key}_{orig_file_name}"
         )
 
         if os.path.exists(unique_file_name): os.remove(unique_file_name)
         users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
-        return bot.reply_to(message, f"🎉 <b>ফাইল প্রসেস সম্পন্ন!</b>\n✅ সফল: <b>{success_count}</b> টি | 💰 আর্ন (হোল্ড): ৳{total_earned:.2f}", reply_markup=submit_tasks_keyboard())
+        return bot.reply_to(message, f"🎉 <b>ফাইল প্রসেস সম্পন্ন!</b>\n✅ রিয়েল লাইভ অ্যাকাউন্ট গৃহীত: <b>{success_count}</b> টি | 💰 আর্ন (হোল্ড): ৳{total_earned:.2f}", reply_markup=submit_tasks_keyboard())
 
 # --- MAIN TEXT ROUTER ---
 @bot.message_handler(content_types=['text', 'photo', 'video', 'animation'])
 def main_router(message):
-    try: _process_main_router(message)
-    except Exception as e: log_ai_report("Main Router Global Error", str(e), "Caught by shield to prevent crash.")
+    background_executor.submit(lambda: _process_main_router(message))
 
 def _process_main_router(message):
     chat_id = message.chat.id
@@ -1374,7 +1379,7 @@ def _process_main_router(message):
     if not isinstance(current_state, dict):
         current_state = {}
 
-    if text in nav_buttons or text.startswith("🛠 মেইনটেনেন্স:") or text.startswith("⏳ পেন্ডিং উইথড্রয়াল চেক"):
+    if text in nav_buttons or text.startswith("🛠 মেইনটেনেন্স:") or text.startswith("⏳ পেন্ডিং উইথড্রয়াল চেক") or text in ["📢 ইউজার ও সিস্টেম কন্ট্রোল", "📊 টাস্ক ও রিপোর্ট ম্যানেজমেন্ট", "💳 ফাইন্যান্স ও উইথড্র", "⚙️ সেটিংস ও কনফিগারেশন"]:
         user_states.pop(chat_id, None)
 
     if text == "❌ বাতিল করুন":
@@ -1974,7 +1979,7 @@ def _process_main_router(message):
                 elif message.animation: bot.send_animation(u["_id"], message.animation.file_id, caption=text)
                 else: bot.send_message(u["_id"], text)
                 success += 1
-                time.sleep(0.05)
+                time.sleep(0.04)
             except ApiTelegramException as e:
                 if e.error_code == 429:
                     time.sleep(e.result_json.get('parameters', {}).get('retry_after', 3))
@@ -2016,28 +2021,37 @@ def _process_main_router(message):
             return bot.send_message(chat_id, f"🔑 <b>2FA Code:</b> <code>{totp.now()}</code>", reply_markup=helper_tools_keyboard())
         except Exception: return bot.send_message(chat_id, "❌ ভুল 2FA Secret Key!", reply_markup=helper_tools_keyboard())
 
+    # 🚀 PARALLEL MULTI-THREADED BULK CHECKERS
     elif step == 'AWAITING_BULK_FB_CHECK':
         user_states.pop(chat_id, None)
         lines = [l.strip() for l in text.split("\n") if l.strip()]
-        live_list, dead_list = [], []
+        uids_to_check = []
         for line in lines[:20]:
             uid = extract_numeric_uid(line)
-            if uid:
-                is_live, _ = check_live_account(uid)
+            if uid: uids_to_check.append(uid)
+
+        live_list, dead_list = [], []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            results = executor.map(check_live_account, uids_to_check)
+            for uid, (is_live, _) in zip(uids_to_check, results):
                 if is_live: live_list.append(uid)
                 else: dead_list.append(uid)
-        out = f"📊 <b>FACEBOOK BULK CHECK REPORT</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n• মোট চেক: {len(lines)} টি\n🟢 <b>Live:</b> {len(live_list)} টি\n🔴 <b>Dead:</b> {len(dead_list)} টি\n\n🟢 <b>LIVE LIST:</b>\n"
+
+        out = f"📊 <b>FACEBOOK BULK CHECK REPORT</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n• মোট চেক: {len(uids_to_check)} টি\n🟢 <b>Live:</b> {len(live_list)} টি\n🔴 <b>Dead:</b> {len(dead_list)} টি\n\n🟢 <b>LIVE LIST:</b>\n"
         for l in live_list: out += f"<code>{l}</code>\n"
         return bot.send_message(chat_id, out, reply_markup=helper_tools_keyboard())
 
     elif step == 'AWAITING_BULK_IG_CHECK':
         user_states.pop(chat_id, None)
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        lines = [l.strip() for l in text.split("\n") if l.strip()][:20]
+
         live_list, dead_list = [], []
-        for line in lines[:20]:
-            is_live, _ = check_ig_username_live(line)
-            if is_live: live_list.append(line)
-            else: dead_list.append(line)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            results = executor.map(check_ig_username_live, lines)
+            for line, (is_live, _) in zip(lines, results):
+                if is_live: live_list.append(line)
+                else: dead_list.append(line)
+
         out = f"📊 <b>INSTAGRAM BULK CHECK REPORT</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n• মোট চেক: {len(lines)} টি\n🟢 <b>Live:</b> {len(live_list)} টি\n🔴 <b>Dead:</b> {len(dead_list)} টি\n\n🟢 <b>LIVE LIST:</b>\n"
         for l in live_list: out += f"<code>{sanitize_html(l)}</code>\n"
         return bot.send_message(chat_id, out, reply_markup=helper_tools_keyboard())
@@ -2061,14 +2075,9 @@ def _process_main_router(message):
         user_states.pop(chat_id, None)
 
         lines = [l.strip() for l in text.split("\n") if l.strip()]
-        success_list, rejected_list = [], []
-        total_earned = 0.0
-
-        now_time = get_bd_time()
-        now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
-        date_key = now_time.strftime("%Y-%m-%d")
-
-        valid_raw_payloads = []
+        
+        parsed_items = []
+        rejected_list = []
 
         for line in lines:
             uid = extract_numeric_uid(line)
@@ -2085,16 +2094,49 @@ def _process_main_router(message):
                 continue
 
             cat_key = "fb_cookie" if is_valid_cookies(line) else "fb_2fa"
-            cat_display = CAT_MAP.get(cat_key, "FB Cookies")
-            rate = float(get_current_task_rate(cat_key))
+            parsed_items.append({
+                "uid": uid, "line": line, "p_hash": p_hash, "cat_key": cat_key
+            })
+
+        # 🚀 ULTRA-FAST PARALLEL LIVE CHECK ENGINE FOR BULK TEXT
+        def _check_bulk_item(item):
+            if item["cat_key"] in ["fb_cookie", "fb_2fa"]:
+                is_live, _ = check_live_account(item["uid"])
+                item["is_live"] = is_live
+            else:
+                item["is_live"] = True
+            return item
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
+            checked_items = list(executor.map(_check_bulk_item, parsed_items))
+
+        success_list = []
+        total_earned = 0.0
+
+        now_time = get_bd_time()
+        now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
+        date_key = now_time.strftime("%Y-%m-%d")
+
+        valid_raw_payloads = []
+
+        for item in checked_items:
+            uid = item["uid"]
+            line = item["line"]
+            
+            if not item.get("is_live"):
+                rejected_list.append((uid, "একাউন্টটি নষ্ট বা ডেড হয়ে গেছে (Live Check Failed)"))
+                continue
+
+            cat_display = CAT_MAP.get(item["cat_key"], "FB Cookies")
+            rate = float(get_current_task_rate(item["cat_key"]))
             track_id = generate_tracking_id()
 
             try:
                 submissions_col.insert_one({
                     "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
-                    "password": password_to_use, "payload": line, "payload_hash": p_hash,
+                    "password": password_to_use, "payload": line, "payload_hash": item["p_hash"],
                     "track_id": track_id, "category": cat_display,
-                    "category_key": cat_key, "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                    "category_key": item["cat_key"], "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
                 })
                 valid_raw_payloads.append(line)
                 success_list.append(uid); total_earned += rate
@@ -2112,15 +2154,15 @@ def _process_main_router(message):
             send_private_backup_message(
                 f"📦 <b>[PRIVATE BACKUP - Bulk Text Submission]</b>\n"
                 f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
-                f"🔑 Pass: <code>{sanitize_html(password_to_use)}</code> | ✅ Valid: <b>{len(success_list)}</b> টি | 💰 Hold: ৳{total_earned:.2f}\n\n"
+                f"🔑 Pass: <code>{sanitize_html(password_to_use)}</code> | ✅ Valid Live: <b>{len(success_list)}</b> টি | 💰 Hold: ৳{total_earned:.2f}\n\n"
                 f"📄 <b>Accepted Raw Data:</b>\n<code>{safe_raw_text}</code>"
             )
 
         users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
 
         out = f"🎉 <b>বাল্ক সাবমিশন রিপোর্ট!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        out += f"✅ <b>গৃহীত একাউন্ট:</b> {len(success_list)} টি\n"
-        out += f"❌ <b>বাতিলকৃত একাউন্ট:</b> {len(rejected_list)} টি\n"
+        out += f"✅ <b>গৃহীত একাউন্ট (Live):</b> {len(success_list)} টি\n"
+        out += f"❌ <b>বাতিলকৃত একাউন্ট (Dead/Duplicate):</b> {len(rejected_list)} টি\n"
         out += f"💰 <b>আর্ন (এসক্রো হোল্ড):</b> ৳{total_earned:.2f} BDT\n\n"
 
         if success_list:
@@ -2142,9 +2184,20 @@ def _process_main_router(message):
         uid = extract_numeric_uid(text)
         if not uid or is_duplicate_uid(uid): return bot.send_message(chat_id, "❌ ভুল বা ডুপ্লিকেট UID!")
         cat = state.get('category', 'fb_cookie')
+        
+        # ⚡ AUTOMATIC BACKGROUND LIVE CHECK ON SINGLE UID
+        if "fb" in cat:
+            is_live, _ = check_live_account(uid)
+            if not is_live:
+                return bot.send_message(
+                    chat_id, 
+                    f"❌ <b>একাউন্ট জমা নেওয়া হয়নি!</b>\n\n⚠️ <b>কারণ:</b> আপনার ফেসবুক একাউন্টটি নষ্ট বা ডেড হয়ে গেছে (Checkpoint/Suspended)।", 
+                    reply_markup=submit_tasks_keyboard()
+                )
+
         state['uid'] = uid; state['step'] = 'AWAITING_SINGLE_DATA'
         prompt = "🍪 Cookies পেস্ট করুন:" if "cookie" in cat else "🔐 2FA Secret Key দিন:"
-        return bot.send_message(chat_id, f"✅ Verified UID: <code>{uid}</code>\n\n{prompt}", reply_markup=cancel_keyboard())
+        return bot.send_message(chat_id, f"✅ Verified Live UID: <code>{uid}</code>\n\n{prompt}", reply_markup=cancel_keyboard())
 
     elif step == 'AWAITING_SINGLE_DATA':
         safe_delete_msg(chat_id, message.message_id) 
