@@ -2,7 +2,6 @@ import os
 import re
 import json
 import io
-import base64
 import random
 import datetime
 from datetime import timedelta, timezone
@@ -15,6 +14,7 @@ import hashlib
 import requests
 import pyotp
 import pandas as pd
+import uuid
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, request, abort
 import telebot
@@ -37,9 +37,34 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 LOG_CHANNEL_ID = -1003943094107
 BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID", -1003943094107))
 
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+# Extreme Scale Optimization: Telebot num_threads increased to 200 for high concurrency
+bot = telebot.TeleBot(TOKEN, parse_mode="HTML", threaded=True, num_threads=200)
 
-# Configure Google Gemini AI
+# ================= ⚡ DYNAMIC RETRY ENGINE (No Worker Sleep/Blocking) =================
+def with_rate_limit_protection(func):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except ApiTelegramException as e:
+            if e.error_code == 429:
+                retry_after = int(e.result_json.get('parameters', {}).get('retry_after', 3))
+                # Uses separate non-blocking timer thread for each delayed message
+                threading.Timer(retry_after + 0.5, lambda: wrapper(*args, **kwargs)).start()
+            return None
+        except Exception:
+            return None
+    return wrapper
+
+bot.send_message = with_rate_limit_protection(bot.send_message)
+bot.reply_to = with_rate_limit_protection(bot.reply_to)
+bot.edit_message_text = with_rate_limit_protection(bot.edit_message_text)
+bot.send_document = with_rate_limit_protection(bot.send_document)
+bot.send_photo = with_rate_limit_protection(bot.send_photo)
+bot.send_video = with_rate_limit_protection(bot.send_video)
+bot.send_animation = with_rate_limit_protection(bot.send_animation)
+bot.delete_message = with_rate_limit_protection(bot.delete_message)
+
+# ================= Configure Google Gemini AI =================
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     ai_model = genai.GenerativeModel('gemini-1.5-flash')
@@ -54,9 +79,9 @@ except Exception:
 # MongoDB Connection Pool Optimized for Ultra-Fast Connections
 mongo_client = MongoClient(
     MONGO_URL,
-    maxPoolSize=500,
-    minPoolSize=50,
-    maxIdleTimeMS=30000,
+    maxPoolSize=1000,   # Increased for 10M scale
+    minPoolSize=100,
+    maxIdleTimeMS=45000,
     connectTimeoutMS=5000,
     socketTimeoutMS=5000
 )
@@ -88,46 +113,70 @@ REQUIRED_CHANNELS = [
 
 BD_TIMEZONE = timezone(timedelta(hours=6))
 
-# High-Performance Thread Executor
-class SafeBoundedExecutor:
-    def __init__(self, max_workers, max_queue):
+# ================= ⚡ NATURAL BACKPRESSURE EXECUTOR (Zero Data Loss) =================
+class GuaranteedBoundedExecutor:
+    def __init__(self, max_workers, max_queue_size=50000):
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-        self.semaphore = threading.Semaphore(max_workers + max_queue)
-        self.overflow_queue = queue.Queue(maxsize=10000)
-        threading.Thread(target=self._overflow_worker, daemon=True).start()
-
-    def _overflow_worker(self):
-        while True:
-            try:
-                fn, args, kwargs = self.overflow_queue.get()
-                try:
-                    fn(*args, **kwargs)
-                except Exception:
-                    pass
-                self.overflow_queue.task_done()
-            except Exception:
-                pass
+        # Using a semaphore creates natural backpressure to prevent OOM and drop-less execution
+        self.semaphore = threading.Semaphore(max_queue_size)
 
     def submit(self, fn, *args, **kwargs):
-        if self.semaphore.acquire(blocking=False):
-            try:
-                future = self.executor.submit(fn, *args, **kwargs)
-                future.add_done_callback(lambda x: self.semaphore.release())
-                return future
-            except Exception:
-                self.semaphore.release()
-                raise
-        else:
-            try:
-                self.overflow_queue.put_nowait((fn, args, kwargs))
-            except queue.Full:
-                pass 
+        self.semaphore.acquire() # Blocks safely if queue is absolutely full (prevents memory crash)
+        try:
+            future = self.executor.submit(fn, *args, **kwargs)
+            future.add_done_callback(lambda x: self.semaphore.release())
+            return future
+        except Exception:
+            self.semaphore.release()
+            raise
 
-background_executor = SafeBoundedExecutor(max_workers=50, max_queue=10000)
+# ⚡ Main executors completely segregated to prevent Deadlocks
+background_executor = GuaranteedBoundedExecutor(max_workers=150, max_queue_size=50000) # Fast UI clicks
+heavy_task_executor = GuaranteedBoundedExecutor(max_workers=50, max_queue_size=20000)  # Excel/Bulk files
+live_check_executor = concurrent.futures.ThreadPoolExecutor(max_workers=15) # Safe limit for FB IP Ban
+cache_executor = concurrent.futures.ThreadPoolExecutor(max_workers=20) # Prevents Circular Deadlock on DB Saves
 
-# Fully Thread-Safe In-Memory Cache
+# ================= ⚡ ULTRA-FAST IN-MEMORY RAM CACHE =================
+class FastSettingsCache:
+    def __init__(self):
+        self.cache = {}
+        self.lock = threading.Lock()
+        self._init_cache()
+
+    def _init_cache(self):
+        try:
+            for s in settings_col.find():
+                self.cache[s["_id"]] = s["value"]
+        except Exception:
+            pass
+
+    def get(self, key, default):
+        with self.lock:
+            if key in self.cache:
+                return self.cache[key]
+        
+        res = settings_col.find_one({"_id": key})
+        val = res["value"] if res else default
+        with self.lock:
+            self.cache[key] = val
+        return val
+
+    def set(self, key, value):
+        with self.lock:
+            self.cache[key] = value
+        cache_executor.submit(lambda: settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True))
+
+fast_settings = FastSettingsCache()
+
+def get_setting(key, default):
+    return fast_settings.get(key, default)
+
+def update_setting(key, value):
+    fast_settings.set(key, value)
+
+# Fully Thread-Safe In-Memory Session Cache
 class MongoDict:
-    def __init__(self, collection, max_cache_size=10000):
+    def __init__(self, collection, max_cache_size=20000):
         self.col = collection
         self.cache = collections.OrderedDict()
         self.max_cache_size = max_cache_size
@@ -150,7 +199,7 @@ class MongoDict:
     def __setitem__(self, key, value):
         with self.lock:
             self._add_to_cache(key, value)
-        background_executor.submit(self._async_save, key, value)
+        cache_executor.submit(self._async_save, key, value)
 
     def _add_to_cache(self, key, value):
         self.cache[key] = value
@@ -173,7 +222,7 @@ class MongoDict:
                 doc = self.col.find_one_and_delete({"_id": key})
                 if doc:
                     val = doc.get("state", default)
-        background_executor.submit(self._async_delete, key)
+        cache_executor.submit(self._async_delete, key)
         return val
 
     def _async_delete(self, key):
@@ -227,13 +276,6 @@ def _async_safe_delete(chat_id, message_id):
         bot.delete_message(chat_id, message_id)
     except Exception:
         pass
-
-def get_setting(key, default):
-    res = settings_col.find_one({"_id": key})
-    return res["value"] if res else default
-
-def update_setting(key, value):
-    settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
 
 def get_active_surge_bonus():
     surge_info = get_setting("surge_pricing", {"active": False, "bonus": 0.0, "expires_at": None})
@@ -381,15 +423,10 @@ def broadcast_password_rule_notice(new_rule):
         for u in all_users:
             try:
                 bot.send_message(u["_id"], notice_text)
-                time.sleep(0.04)
-            except ApiTelegramException as e:
-                if e.error_code == 429:
-                    time.sleep(e.result_json.get('parameters', {}).get('retry_after', 3))
-                    try: bot.send_message(u["_id"], notice_text)
-                    except: pass
+                time.sleep(0.04) # Safe local delay
             except Exception:
                 pass
-    background_executor.submit(task)
+    heavy_task_executor.submit(task)
 
 def make_progress_bar(processed, total, length=10):
     if not total or total == 0: return "░" * length
@@ -405,7 +442,8 @@ def get_user_data(chat_id):
             "banned": False, "ban_reason": "", "custom_password": "",
             "last_bonus_date": None, "joined_date": get_bd_time(), "last_active": get_bd_time()
         }
-        users_col.insert_one(user)
+        try: users_col.insert_one(user)
+        except: pass
     return user
 
 def update_user_field(chat_id, field, value):
@@ -454,18 +492,20 @@ def is_valid_cookies(cookie_str):
     c_str = str(cookie_str)
     return ("c_user=" in c_str) or ("datr=" in c_str) or ("xs=" in c_str) or ("sessionid=" in c_str)
 
-# ⚡ ACCURATE ULTRA-FAST LIVE CHECKER ENGINE
+# ⚡ ACCURATE ULTRA-FAST LIVE CHECKER ENGINE (WITH ANTI-SPAM JITTER)
 def check_live_account(uid):
     try:
         clean_uid = extract_numeric_uid(uid)
         if not clean_uid: return False, "Invalid UID format"
+        
+        time.sleep(random.uniform(0.1, 0.5)) # Dynamic Jitter prevents WAF bans
         
         url = f"https://m.facebook.com/profile.php?id={clean_uid}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-A705FN) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
             "Accept-Language": "en-US,en;q=0.5"
         }
-        res = requests.get(url, headers=headers, timeout=3.5, allow_redirects=True)
+        res = requests.get(url, headers=headers, timeout=4.0, allow_redirects=True)
         content = res.text.lower()
         
         if res.status_code != 200:
@@ -485,9 +525,11 @@ def check_live_account(uid):
 def check_ig_username_live(username):
     try:
         clean_user = username.replace("@", "").strip()
+        time.sleep(random.uniform(0.1, 0.5))
+        
         url = f"https://www.instagram.com/{clean_user}/"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get(url, headers=headers, timeout=3.5)
+        res = requests.get(url, headers=headers, timeout=4.0)
         if res.status_code == 200 and "Page Not Found" not in res.text: return True, "Live Instagram Profile"
         return False, "Dead / Suspended"
     except Exception: return True, "Assumed Live"
@@ -750,6 +792,9 @@ def telegram_webhook():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    background_executor.submit(lambda: _process_welcome(message))
+
+def _process_welcome(message):
     try:
         chat_id = message.chat.id
         
@@ -1169,7 +1214,7 @@ def _process_callbacks(call):
 # --- FILE/DOCUMENT ROUTER ---
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
-    background_executor.submit(lambda: _process_document(message))
+    heavy_task_executor.submit(lambda: _process_document(message))
 
 def _process_document(message):
     chat_id = message.chat.id
@@ -1184,70 +1229,68 @@ def _process_document(message):
         target_date = state.get('target_date', 'ALL')
         target_cat = state.get('target_cat', 'ALL')
         user_states.pop(chat_id, None)
+        bot.reply_to(message, "⏳ <b>বায়ার রিপোর্ট স্ক্যানিং ও ম্যাচিং চলছে...</b>\nদয়া করে কিছুক্ষণ অপেক্ষা করুন।")
         
-        file_info = bot.get_file(message.document.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-        filename = message.document.file_name.lower()
-        extracted_uids = set()
-        
-        if filename.endswith(".csv"): 
-            df_raw = pd.read_csv(io.BytesIO(downloaded), dtype=str)
-            extracted_uids = set(df_raw.astype(str).values.flatten())
-        elif filename.endswith(".xlsx"): 
-            df_raw = pd.read_excel(io.BytesIO(downloaded), dtype=str)
-            extracted_uids = set(df_raw.astype(str).values.flatten())
-        else: 
-            extracted_uids = set(re.findall(r'\b\d{8,20}\b', downloaded.decode('utf-8', errors='ignore')))
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded = bot.download_file(file_info.file_path)
+            filename = message.document.file_name.lower()
+            extracted_uids = set()
             
-        cleaned_uids = set()
-        for u in extracted_uids:
-            clean_u = str(u).strip().split('.')[0]
-            if clean_u.isdigit(): cleaned_uids.add(clean_u)
-        
-        query = build_date_query(target_date, "Hold")
-        if target_cat != "ALL": query["category_key"] = target_cat
-        
-        pending_subs = list(submissions_col.find(query))
-        if not pending_subs:
-            return bot.send_message(ADMIN_ID, f"📭 <b>[{target_date} | {target_cat}]</b> এর কোনো পেন্ডিং কাজ খুঁজে পাওয়া যায়নি!", reply_markup=admin_bottom_keyboard())
-
-        appr, rej, payout = 0, 0, 0.0
-        notifications = []
-        
-        for sub in pending_subs:
-            uid = str(sub.get("uid", "")).strip()
-            amt = float(sub.get("rate") or 0.0)
-            if uid in cleaned_uids:
-                submissions_col.update_one({"_id": sub["_id"]}, {"$set": {"status": "Approved"}})
-                users_col.update_one({"_id": sub["chat_id"]}, {"$inc": {"balance": amt, "hold_balance": -amt}})
-                appr += 1; payout += amt
-                notifications.append((sub["chat_id"], f"✅ বায়ার রিপোর্টে আপনার আইডি (<code>{uid}</code>) এপ্রুভ হয়েছে! ৳{amt} যোগ হয়েছে।"))
-            else:
-                submissions_col.update_one({"_id": sub["_id"]}, {"$set": {"status": "Rejected"}})
-                users_col.update_one({"_id": sub["chat_id"]}, {"$inc": {"hold_balance": -amt}})
-                rej += 1
-                notifications.append((sub["chat_id"], f"❌ বায়ার রিপোর্টে আপনার আইডি (<code>{uid}</code>) রিজেক্টেড।"))
+            if filename.endswith(".csv"): 
+                df_raw = pd.read_csv(io.BytesIO(downloaded), dtype=str)
+                extracted_uids = set(df_raw.astype(str).values.flatten())
+            elif filename.endswith(".xlsx"): 
+                df_raw = pd.read_excel(io.BytesIO(downloaded), dtype=str)
+                extracted_uids = set(df_raw.astype(str).values.flatten())
+            else: 
+                extracted_uids = set(re.findall(r'\b\d{8,20}\b', downloaded.decode('utf-8', errors='ignore')))
                 
-        def send_async_notifications(notification_list):
-            for worker_id, text_msg in notification_list:
-                try:
+            cleaned_uids = set()
+            for u in extracted_uids:
+                clean_u = str(u).strip().split('.')[0]
+                if clean_u.isdigit(): cleaned_uids.add(clean_u)
+            
+            query = build_date_query(target_date, "Hold")
+            if target_cat != "ALL": query["category_key"] = target_cat
+            
+            pending_subs = list(submissions_col.find(query))
+            if not pending_subs:
+                return bot.send_message(ADMIN_ID, f"📭 <b>[{target_date} | {target_cat}]</b> এর কোনো পেন্ডিং কাজ খুঁজে পাওয়া যায়নি!", reply_markup=admin_bottom_keyboard())
+
+            appr, rej, payout = 0, 0, 0.0
+            notifications = []
+            
+            for sub in pending_subs:
+                uid = str(sub.get("uid", "")).strip()
+                amt = float(sub.get("rate") or 0.0)
+                if uid in cleaned_uids:
+                    submissions_col.update_one({"_id": sub["_id"]}, {"$set": {"status": "Approved"}})
+                    users_col.update_one({"_id": sub["chat_id"]}, {"$inc": {"balance": amt, "hold_balance": -amt}})
+                    appr += 1; payout += amt
+                    notifications.append((sub["chat_id"], f"✅ বায়ার রিপোর্টে আপনার আইডি (<code>{uid}</code>) এপ্রুভ হয়েছে! ৳{amt} যোগ হয়েছে।"))
+                else:
+                    submissions_col.update_one({"_id": sub["_id"]}, {"$set": {"status": "Rejected"}})
+                    users_col.update_one({"_id": sub["chat_id"]}, {"$inc": {"hold_balance": -amt}})
+                    rej += 1
+                    notifications.append((sub["chat_id"], f"❌ বায়ার রিপোর্টে আপনার আইডি (<code>{uid}</code>) রিজেক্টেড।"))
+                    
+            def send_async_notifications(notification_list):
+                for worker_id, text_msg in notification_list:
                     bot.send_message(worker_id, text_msg)
-                    time.sleep(0.04)
-                except ApiTelegramException as e:
-                    if e.error_code == 429:
-                        time.sleep(e.result_json.get('parameters', {}).get('retry_after', 3))
-                except Exception: pass
 
-        background_executor.submit(lambda: send_async_notifications(notifications))
+            background_executor.submit(lambda: send_async_notifications(notifications))
 
-        return bot.send_message(
-            ADMIN_ID, 
-            f"🤖 <b>[BUYER REPORT MATCH COMPLETE]</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📅 তারিখ: <b>{target_date}</b> | 📁 ক্যাটাগরি: <b>{target_cat}</b>\n"
-            f"✅ এপ্রুভড: <b>{appr} টি</b> (৳{payout:.2f}) | ❌ রিজেক্টেড: <b>{rej} টি</b>", 
-            reply_markup=admin_bottom_keyboard()
-        )
+            return bot.send_message(
+                ADMIN_ID, 
+                f"🤖 <b>[BUYER REPORT MATCH COMPLETE]</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📅 তারিখ: <b>{target_date}</b> | 📁 ক্যাটাগরি: <b>{target_cat}</b>\n"
+                f"✅ এপ্রুভড: <b>{appr} টি</b> (৳{payout:.2f}) | ❌ রিজেক্টেড: <b>{rej} টি</b>", 
+                reply_markup=admin_bottom_keyboard()
+            )
+        except Exception:
+            return bot.send_message(chat_id, "❌ ফাইলটি রিড করা যায়নি। সঠিক ফরম্যাটের এক্সেল বা সিএসভি দিন।")
 
     if state and state.get('step') == 'AWAITING_EXCEL_FILE':
         user = get_user_data(chat_id)
@@ -1266,82 +1309,92 @@ def _process_document(message):
             return bot.reply_to(message, ai_warn, reply_markup=submit_tasks_keyboard())
 
         user_states.pop(chat_id, None)
+        bot.reply_to(message, "⏳ <b>এক্সেল ফাইল প্রসেসিং শুরু হয়েছে...</b>\nব্যাকগ্রাউন্ডে লাইভ চেক ও স্ক্যান শেষ হলে আপনাকে স্বয়ংক্রিয় নোটিফিকেশন দেওয়া হবে।", reply_markup=submit_tasks_keyboard())
+        
         file_info = bot.get_file(message.document.file_id)
         orig_file_name = message.document.file_name
-        
         now_time = get_bd_time()
-        unique_file_name = f"user_{chat_id}_{int(now_time.timestamp())}_{orig_file_name}"
-        file_downloaded_bytes = bot.download_file(file_info.file_path)
         
-        with open(unique_file_name, 'wb') as f: f.write(file_downloaded_bytes)
-
-        df = pd.read_csv(unique_file_name, dtype=str) if unique_file_name.endswith('.csv') else pd.read_excel(unique_file_name, dtype=str)
-        df = df.fillna('')
-        now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
-        date_key = now_time.strftime("%Y-%m-%d")
-
-        candidates = []
-        for _, row in df.iterrows():
-            vals = [str(x).strip() for x in row.values]
-            uid, password, payload = None, password_to_use, None
-            for v in vals:
-                if not uid and extract_numeric_uid(v): uid = extract_numeric_uid(v)
-                elif is_valid_cookies(v) or len(v) > 20: payload = v
-
-            if uid and payload and not is_duplicate_uid(uid):
-                p_hash = generate_payload_hash(payload)
-                if not is_payload_blacklisted(p_hash):
-                    cat_key = "fb_cookie" if is_valid_cookies(payload) else "fb_2fa"
-                    candidates.append({
-                        "uid": uid, "password": password, "payload": payload,
-                        "payload_hash": p_hash, "cat_key": cat_key
-                    })
-
-        # 🚀 ULTRA-FAST PARALLEL LIVE CHECK ENGINE FOR EXCEL
-        def _check_cand(c):
-            if c["cat_key"] in ["fb_cookie", "fb_2fa"]:
-                is_live, _ = check_live_account(c["uid"])
-                c["is_live"] = is_live
-            else:
-                c["is_live"] = True
-            return c
-
-        success_count, total_earned = 0, 0.0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
-            verified_candidates = list(executor.map(_check_cand, candidates))
-
-        for item in verified_candidates:
-            if not item.get("is_live"):
-                continue
-
-            cat_display = CAT_MAP.get(item["cat_key"], "FB Cookies")
-            rate = float(get_current_task_rate(item["cat_key"]))
-            track_id = generate_tracking_id()
+        unique_file_name = f"user_{chat_id}_{int(now_time.timestamp())}_{uuid.uuid4().hex[:6]}_{orig_file_name}"
+        
+        try:
+            file_downloaded_bytes = bot.download_file(file_info.file_path)
+            with open(unique_file_name, 'wb') as f: f.write(file_downloaded_bytes)
 
             try:
-                submissions_col.insert_one({
-                    "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": item["uid"],
-                    "password": item["password"], "payload": item["payload"], "payload_hash": item["payload_hash"], "track_id": track_id,
-                    "category": cat_display, "category_key": item["cat_key"],
-                    "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
-                })
-                success_count += 1; total_earned += rate
-            except DuplicateKeyError:
-                continue
+                df = pd.read_csv(unique_file_name, dtype=str) if unique_file_name.endswith('.csv') else pd.read_excel(unique_file_name, dtype=str)
+            except Exception:
+                bot.send_message(chat_id, "❌ ফাইলটি রিড করা যায়নি। অনুগ্রহ করে সঠিক `.csv` বা `.xlsx` ফাইল দিন।")
+                return
 
-        backup_file_buf = io.BytesIO(file_downloaded_bytes)
-        send_private_backup_message(
-            f"📊 <b>[PRIVATE BACKUP - Excel Submission]</b>\n"
-            f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
-            f"📁 File: <code>{sanitize_html(orig_file_name)}</code> | 🔑 Pass: <code>{sanitize_html(password_to_use)}</code>\n"
-            f"✅ Valid Live: <b>{success_count}</b> টি | 💰 Hold: ৳{total_earned:.2f}",
-            doc_buf=backup_file_buf,
-            doc_name=f"Backup_{date_key}_{orig_file_name}"
-        )
+            df = df.fillna('')
+            now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
+            date_key = now_time.strftime("%Y-%m-%d")
 
-        if os.path.exists(unique_file_name): os.remove(unique_file_name)
-        users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
-        return bot.reply_to(message, f"🎉 <b>ফাইল প্রসেস সম্পন্ন!</b>\n✅ রিয়েল লাইভ অ্যাকাউন্ট গৃহীত: <b>{success_count}</b> টি | 💰 আর্ন (হোল্ড): ৳{total_earned:.2f}", reply_markup=submit_tasks_keyboard())
+            candidates = []
+            for _, row in df.iterrows():
+                vals = [str(x).strip() for x in row.values]
+                uid, password, payload = None, password_to_use, None
+                for v in vals:
+                    if not uid and extract_numeric_uid(v): uid = extract_numeric_uid(v)
+                    elif is_valid_cookies(v) or len(v) > 20: payload = v
+
+                if uid and payload and not is_duplicate_uid(uid):
+                    p_hash = generate_payload_hash(payload)
+                    if not is_payload_blacklisted(p_hash):
+                        cat_key = "fb_cookie" if is_valid_cookies(payload) else "fb_2fa"
+                        candidates.append({
+                            "uid": uid, "password": password, "payload": payload,
+                            "payload_hash": p_hash, "cat_key": cat_key
+                        })
+
+            def _check_cand(c):
+                if c["cat_key"] in ["fb_cookie", "fb_2fa"]:
+                    is_live, _ = check_live_account(c["uid"])
+                    c["is_live"] = is_live
+                else:
+                    c["is_live"] = True
+                return c
+
+            success_count, total_earned = 0, 0.0
+            verified_candidates = list(live_check_executor.map(_check_cand, candidates))
+
+            for item in verified_candidates:
+                if not item.get("is_live"):
+                    continue
+
+                cat_display = CAT_MAP.get(item["cat_key"], "FB Cookies")
+                rate = float(get_current_task_rate(item["cat_key"]))
+                track_id = generate_tracking_id()
+
+                try:
+                    submissions_col.insert_one({
+                        "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": item["uid"],
+                        "password": item["password"], "payload": item["payload"], "payload_hash": item["payload_hash"], "track_id": track_id,
+                        "category": cat_display, "category_key": item["cat_key"],
+                        "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                    })
+                    success_count += 1; total_earned += rate
+                except DuplicateKeyError:
+                    continue
+
+            backup_file_buf = io.BytesIO(file_downloaded_bytes)
+            send_private_backup_message(
+                f"📊 <b>[PRIVATE BACKUP - Excel Submission]</b>\n"
+                f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
+                f"📁 File: <code>{sanitize_html(orig_file_name)}</code> | 🔑 Pass: <code>{sanitize_html(password_to_use)}</code>\n"
+                f"✅ Valid Live: <b>{success_count}</b> টি | 💰 Hold: ৳{total_earned:.2f}",
+                doc_buf=backup_file_buf,
+                doc_name=f"Backup_{date_key}_{orig_file_name}"
+            )
+
+            users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
+            bot.send_message(chat_id, f"🎉 <b>ফাইল প্রসেস সম্পন্ন!</b>\n✅ রিয়েল লাইভ অ্যাকাউন্ট গৃহীত: <b>{success_count}</b> টি | 💰 আর্ন (হোল্ড): ৳{total_earned:.2f}", reply_markup=submit_tasks_keyboard())
+            
+        finally:
+            if os.path.exists(unique_file_name):
+                try: os.remove(unique_file_name)
+                except: pass
 
 # --- MAIN TEXT ROUTER ---
 @bot.message_handler(content_types=['text', 'photo', 'video', 'animation'])
@@ -1971,20 +2024,21 @@ def _process_main_router(message):
         user_states.pop(chat_id, None)
         all_users = list(users_col.find({"banned": False}))
         bot.send_message(ADMIN_ID, f"📢 <b>{len(all_users)}</b> জন ইউজারকে মেসেজ পাঠানো শুরু হচ্ছে...", reply_markup=admin_sub_system_keyboard())
-        success = 0
-        for u in all_users:
-            try:
-                if message.photo: bot.send_photo(u["_id"], message.photo[-1].file_id, caption=text)
-                elif message.video: bot.send_video(u["_id"], message.video.file_id, caption=text)
-                elif message.animation: bot.send_animation(u["_id"], message.animation.file_id, caption=text)
-                else: bot.send_message(u["_id"], text)
-                success += 1
-                time.sleep(0.04)
-            except ApiTelegramException as e:
-                if e.error_code == 429:
-                    time.sleep(e.result_json.get('parameters', {}).get('retry_after', 3))
-            except Exception: pass
-        return bot.send_message(ADMIN_ID, f"✅ <b>ব্রডকাস্ট সফলভাবে {success} জনকে পাঠানো হয়েছে!</b>")
+        
+        def run_broadcast():
+            success = 0
+            for u in all_users:
+                try:
+                    if message.photo: bot.send_photo(u["_id"], message.photo[-1].file_id, caption=text)
+                    elif message.video: bot.send_video(u["_id"], message.video.file_id, caption=text)
+                    elif message.animation: bot.send_animation(u["_id"], message.animation.file_id, caption=text)
+                    else: bot.send_message(u["_id"], text)
+                    success += 1
+                    time.sleep(0.04)
+                except Exception: pass
+            bot.send_message(ADMIN_ID, f"✅ <b>ব্রডকাস্ট সফলভাবে {success} জনকে পাঠানো হয়েছে!</b>")
+        heavy_task_executor.submit(run_broadcast)
+        return
 
     elif step == 'AWAITING_SUPPORT_MSG':
         user_states.pop(chat_id, None)
@@ -2021,45 +2075,51 @@ def _process_main_router(message):
             return bot.send_message(chat_id, f"🔑 <b>2FA Code:</b> <code>{totp.now()}</code>", reply_markup=helper_tools_keyboard())
         except Exception: return bot.send_message(chat_id, "❌ ভুল 2FA Secret Key!", reply_markup=helper_tools_keyboard())
 
-    # 🚀 PARALLEL MULTI-THREADED BULK CHECKERS
+    # 🚀 PARALLEL MULTI-THREADED BULK CHECKERS (Safe Offloading)
     elif step == 'AWAITING_BULK_FB_CHECK':
         user_states.pop(chat_id, None)
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-        uids_to_check = []
-        for line in lines[:20]:
-            uid = extract_numeric_uid(line)
-            if uid: uids_to_check.append(uid)
+        bot.send_message(chat_id, "⏳ <b>ফেসবুক আইডিগুলো ব্যাকগ্রাউন্ডে চেক করা হচ্ছে...</b>", reply_markup=helper_tools_keyboard())
+        
+        def run_fb_check():
+            lines = [l.strip() for l in text.split("\n") if l.strip()]
+            uids_to_check = []
+            for line in lines[:50]:
+                uid = extract_numeric_uid(line)
+                if uid: uids_to_check.append(uid)
 
-        live_list, dead_list = [], []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            results = executor.map(check_live_account, uids_to_check)
+            live_list, dead_list = [], []
+            results = list(live_check_executor.map(check_live_account, uids_to_check))
             for uid, (is_live, _) in zip(uids_to_check, results):
                 if is_live: live_list.append(uid)
                 else: dead_list.append(uid)
 
-        out = f"📊 <b>FACEBOOK BULK CHECK REPORT</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n• মোট চেক: {len(uids_to_check)} টি\n🟢 <b>Live:</b> {len(live_list)} টি\n🔴 <b>Dead:</b> {len(dead_list)} টি\n\n🟢 <b>LIVE LIST:</b>\n"
-        for l in live_list: out += f"<code>{l}</code>\n"
-        return bot.send_message(chat_id, out, reply_markup=helper_tools_keyboard())
+            out = f"📊 <b>FACEBOOK BULK CHECK REPORT</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n• মোট চেক: {len(uids_to_check)} টি\n🟢 <b>Live:</b> {len(live_list)} টি\n🔴 <b>Dead:</b> {len(dead_list)} টি\n\n🟢 <b>LIVE LIST:</b>\n"
+            for l in live_list: out += f"<code>{l}</code>\n"
+            bot.send_message(chat_id, out)
+        heavy_task_executor.submit(run_fb_check)
+        return
 
     elif step == 'AWAITING_BULK_IG_CHECK':
         user_states.pop(chat_id, None)
-        lines = [l.strip() for l in text.split("\n") if l.strip()][:20]
-
-        live_list, dead_list = [], []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            results = executor.map(check_ig_username_live, lines)
+        bot.send_message(chat_id, "⏳ <b>ইনস্টাগ্রাম আইডিগুলো ব্যাকগ্রাউন্ডে চেক করা হচ্ছে...</b>", reply_markup=helper_tools_keyboard())
+        
+        def run_ig_check():
+            lines = [l.strip() for l in text.split("\n") if l.strip()][:50]
+            live_list, dead_list = [], []
+            results = list(live_check_executor.map(check_ig_username_live, lines))
             for line, (is_live, _) in zip(lines, results):
                 if is_live: live_list.append(line)
                 else: dead_list.append(line)
 
-        out = f"📊 <b>INSTAGRAM BULK CHECK REPORT</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n• মোট চেক: {len(lines)} টি\n🟢 <b>Live:</b> {len(live_list)} টি\n🔴 <b>Dead:</b> {len(dead_list)} টি\n\n🟢 <b>LIVE LIST:</b>\n"
-        for l in live_list: out += f"<code>{sanitize_html(l)}</code>\n"
-        return bot.send_message(chat_id, out, reply_markup=helper_tools_keyboard())
+            out = f"📊 <b>INSTAGRAM BULK CHECK REPORT</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n• মোট চেক: {len(lines)} টি\n🟢 <b>Live:</b> {len(live_list)} টি\n🔴 <b>Dead:</b> {len(dead_list)} টি\n\n🟢 <b>LIVE LIST:</b>\n"
+            for l in live_list: out += f"<code>{sanitize_html(l)}</code>\n"
+            bot.send_message(chat_id, out)
+        heavy_task_executor.submit(run_ig_check)
+        return
 
     elif step == 'AWAITING_BULK_TEXT':
         saved_pass = user.get("custom_password")
         p_rule = str(get_setting("pass_rule", "@21")).strip()
-
         password_to_use = saved_pass if (saved_pass and str(saved_pass).strip() != "" and str(saved_pass).lower() != "none") else p_rule
 
         if p_rule and p_rule.lower() != "none" and not validate_strict_password(password_to_use, p_rule):
@@ -2073,131 +2133,136 @@ def _process_main_router(message):
 
         safe_delete_msg(chat_id, message.message_id) 
         user_states.pop(chat_id, None)
+        bot.send_message(chat_id, "⏳ <b>বাল্ক ডাটা প্রসেসিং শুরু হয়েছে...</b>\nব্যাকগ্রাউন্ডে লাইভ চেক শেষ হলে আপনাকে স্বয়ংক্রিয়ভাবে রিপোর্ট দেওয়া হবে।", reply_markup=submit_tasks_keyboard())
 
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-        
-        parsed_items = []
-        rejected_list = []
+        def run_bulk_text():
+            lines = [l.strip() for l in text.split("\n") if l.strip()]
+            parsed_items = []
+            rejected_list = []
 
-        for line in lines:
-            uid = extract_numeric_uid(line)
-            if not uid:
-                rejected_list.append((line[:20] + "...", "ভুল ইউআইডি / ফরম্যাট এরর"))
-                continue
-            if is_duplicate_uid(uid):
-                rejected_list.append((uid, "ডুপ্লিকেট একাউন্ট (ইতিমধ্যে জমা দেওয়া হয়েছে)"))
-                continue
-            
-            p_hash = generate_payload_hash(line)
-            if is_payload_blacklisted(p_hash):
-                rejected_list.append((uid, "ব্ল্যাকলিস্টেড বা বাতিলকৃত ডাটা"))
-                continue
+            for line in lines:
+                uid = extract_numeric_uid(line)
+                if not uid:
+                    rejected_list.append((line[:20] + "...", "ভুল ইউআইডি / ফরম্যাট এরর"))
+                    continue
+                if is_duplicate_uid(uid):
+                    rejected_list.append((uid, "ডুপ্লিকেট একাউন্ট (ইতিমধ্যে জমা দেওয়া হয়েছে)"))
+                    continue
+                
+                p_hash = generate_payload_hash(line)
+                if is_payload_blacklisted(p_hash):
+                    rejected_list.append((uid, "ব্ল্যাকলিস্টেড বা বাতিলকৃত ডাটা"))
+                    continue
 
-            cat_key = "fb_cookie" if is_valid_cookies(line) else "fb_2fa"
-            parsed_items.append({
-                "uid": uid, "line": line, "p_hash": p_hash, "cat_key": cat_key
-            })
-
-        # 🚀 ULTRA-FAST PARALLEL LIVE CHECK ENGINE FOR BULK TEXT
-        def _check_bulk_item(item):
-            if item["cat_key"] in ["fb_cookie", "fb_2fa"]:
-                is_live, _ = check_live_account(item["uid"])
-                item["is_live"] = is_live
-            else:
-                item["is_live"] = True
-            return item
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
-            checked_items = list(executor.map(_check_bulk_item, parsed_items))
-
-        success_list = []
-        total_earned = 0.0
-
-        now_time = get_bd_time()
-        now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
-        date_key = now_time.strftime("%Y-%m-%d")
-
-        valid_raw_payloads = []
-
-        for item in checked_items:
-            uid = item["uid"]
-            line = item["line"]
-            
-            if not item.get("is_live"):
-                rejected_list.append((uid, "একাউন্টটি নষ্ট বা ডেড হয়ে গেছে (Live Check Failed)"))
-                continue
-
-            cat_display = CAT_MAP.get(item["cat_key"], "FB Cookies")
-            rate = float(get_current_task_rate(item["cat_key"]))
-            track_id = generate_tracking_id()
-
-            try:
-                submissions_col.insert_one({
-                    "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
-                    "password": password_to_use, "payload": line, "payload_hash": item["p_hash"],
-                    "track_id": track_id, "category": cat_display,
-                    "category_key": item["cat_key"], "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                cat_key = "fb_cookie" if is_valid_cookies(line) else "fb_2fa"
+                parsed_items.append({
+                    "uid": uid, "line": line, "p_hash": p_hash, "cat_key": cat_key
                 })
-                valid_raw_payloads.append(line)
-                success_list.append(uid); total_earned += rate
-            except DuplicateKeyError:
-                rejected_list.append((uid, "ডুপ্লিকেট একাউন্ট (রেস কন্ডিশন আটকানো হয়েছে)"))
-                continue
 
-            try:
-                bot.send_message(LOG_CHANNEL_ID, f"📥 <b>NEW SUBMISSION (Bulk Text)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}")
-            except Exception: pass
+            def _check_bulk_item(item):
+                if item["cat_key"] in ["fb_cookie", "fb_2fa"]:
+                    is_live, _ = check_live_account(item["uid"])
+                    item["is_live"] = is_live
+                else:
+                    item["is_live"] = True
+                return item
 
-        if len(success_list) > 0:
-            valid_payload_text = "\n".join(valid_raw_payloads)
-            safe_raw_text = sanitize_html(valid_payload_text[:2500])
-            send_private_backup_message(
-                f"📦 <b>[PRIVATE BACKUP - Bulk Text Submission]</b>\n"
-                f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
-                f"🔑 Pass: <code>{sanitize_html(password_to_use)}</code> | ✅ Valid Live: <b>{len(success_list)}</b> টি | 💰 Hold: ৳{total_earned:.2f}\n\n"
-                f"📄 <b>Accepted Raw Data:</b>\n<code>{safe_raw_text}</code>"
-            )
+            checked_items = list(live_check_executor.map(_check_bulk_item, parsed_items))
 
-        users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
+            success_list = []
+            total_earned = 0.0
 
-        out = f"🎉 <b>বাল্ক সাবমিশন রিপোর্ট!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        out += f"✅ <b>গৃহীত একাউন্ট (Live):</b> {len(success_list)} টি\n"
-        out += f"❌ <b>বাতিলকৃত একাউন্ট (Dead/Duplicate):</b> {len(rejected_list)} টি\n"
-        out += f"💰 <b>আর্ন (এসক্রো হোল্ড):</b> ৳{total_earned:.2f} BDT\n\n"
+            now_time = get_bd_time()
+            now_str = now_time.strftime("%Y-%m-%d %H:%M:%S")
+            date_key = now_time.strftime("%Y-%m-%d")
 
-        if success_list:
-            out += "🟢 <b>ACCEPTED UID LIST:</b>\n"
-            for s in success_list[:15]: out += f"• <code>{s}</code>\n"
-            if len(success_list) > 15: out += f"<i>...এবং আরও {len(success_list)-15} টি</i>\n"
+            valid_raw_payloads = []
 
-        if rejected_list:
-            out += "\n🔴 <b>REJECTED DETAILS:</b>\n"
-            for r_item, r_reason in rejected_list[:10]:
-                out += f"• <code>{r_item}</code> — <i>{r_reason}</i>\n"
-            if len(rejected_list) > 10: out += f"<i>...এবং আরও {len(rejected_list)-10} টি বাতিল</i>\n"
+            for item in checked_items:
+                uid = item["uid"]
+                line = item["line"]
+                
+                if not item.get("is_live"):
+                    rejected_list.append((uid, "একাউন্টটি নষ্ট বা ডেড হয়ে গেছে (Live Check Failed)"))
+                    continue
 
-        return bot.send_message(chat_id, out, reply_markup=submit_tasks_keyboard())
+                cat_display = CAT_MAP.get(item["cat_key"], "FB Cookies")
+                rate = float(get_current_task_rate(item["cat_key"]))
+                track_id = generate_tracking_id()
+
+                try:
+                    submissions_col.insert_one({
+                        "chat_id": chat_id, "worker_name": sanitize_html(message.from_user.first_name), "uid": uid,
+                        "password": password_to_use, "payload": line, "payload_hash": item["p_hash"],
+                        "track_id": track_id, "category": cat_display,
+                        "category_key": item["cat_key"], "rate": rate, "status": "Hold", "date_key": date_key, "date_str": now_str, "date_obj": now_time
+                    })
+                    valid_raw_payloads.append(line)
+                    success_list.append(uid); total_earned += rate
+                except DuplicateKeyError:
+                    rejected_list.append((uid, "ডুপ্লিকেট একাউন্ট (রেস কন্ডিশন আটকানো হয়েছে)"))
+                    continue
+
+                try:
+                    bot.send_message(LOG_CHANNEL_ID, f"📥 <b>NEW SUBMISSION (Bulk Text)</b>\n📌 Track: <code>{track_id}</code> | 👤 Worker: <code>{chat_id}</code> | 🆔 UID: <code>{uid}</code> | 💰 Rate: ৳{rate:.2f}")
+                except Exception: pass
+
+            if len(success_list) > 0:
+                valid_payload_text = "\n".join(valid_raw_payloads)
+                safe_raw_text = sanitize_html(valid_payload_text[:2500])
+                send_private_backup_message(
+                    f"📦 <b>[PRIVATE BACKUP - Bulk Text Submission]</b>\n"
+                    f"👤 Worker ID: <code>{chat_id}</code> ({sanitize_html(message.from_user.first_name)})\n"
+                    f"🔑 Pass: <code>{sanitize_html(password_to_use)}</code> | ✅ Valid Live: <b>{len(success_list)}</b> টি | 💰 Hold: ৳{total_earned:.2f}\n\n"
+                    f"📄 <b>Accepted Raw Data:</b>\n<code>{safe_raw_text}</code>"
+                )
+
+            users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": total_earned}})
+
+            out = f"🎉 <b>বাল্ক সাবমিশন রিপোর্ট!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            out += f"✅ <b>গৃহীত একাউন্ট (Live):</b> {len(success_list)} টি\n"
+            out += f"❌ <b>বাতিলকৃত একাউন্ট (Dead/Duplicate):</b> {len(rejected_list)} টি\n"
+            out += f"💰 <b>আর্ন (এসক্রো হোল্ড):</b> ৳{total_earned:.2f} BDT\n\n"
+
+            if success_list:
+                out += "🟢 <b>ACCEPTED UID LIST:</b>\n"
+                for s in success_list[:15]: out += f"• <code>{s}</code>\n"
+                if len(success_list) > 15: out += f"<i>...এবং আরও {len(success_list)-15} টি</i>\n"
+
+            if rejected_list:
+                out += "\n🔴 <b>REJECTED DETAILS:</b>\n"
+                for r_item, r_reason in rejected_list[:10]:
+                    out += f"• <code>{r_item}</code> — <i>{r_reason}</i>\n"
+                if len(rejected_list) > 10: out += f"<i>...এবং আরও {len(rejected_list)-10} টি বাতিল</i>\n"
+
+            bot.send_message(chat_id, out)
+        heavy_task_executor.submit(run_bulk_text)
+        return
 
     elif step == 'AWAITING_UID':
         safe_delete_msg(chat_id, message.message_id) 
-
         uid = extract_numeric_uid(text)
         if not uid or is_duplicate_uid(uid): return bot.send_message(chat_id, "❌ ভুল বা ডুপ্লিকেট UID!")
         cat = state.get('category', 'fb_cookie')
         
-        # ⚡ AUTOMATIC BACKGROUND LIVE CHECK ON SINGLE UID
-        if "fb" in cat:
-            is_live, _ = check_live_account(uid)
-            if not is_live:
-                return bot.send_message(
-                    chat_id, 
-                    f"❌ <b>একাউন্ট জমা নেওয়া হয়নি!</b>\n\n⚠️ <b>কারণ:</b> আপনার ফেসবুক একাউন্টটি নষ্ট বা ডেড হয়ে গেছে (Checkpoint/Suspended)।", 
-                    reply_markup=submit_tasks_keyboard()
-                )
+        def run_single_uid_check():
+            if "fb" in cat:
+                is_live, _ = check_live_account(uid)
+                if not is_live:
+                    bot.send_message(
+                        chat_id, 
+                        f"❌ <b>একাউন্ট জমা নেওয়া হয়নি!</b>\n\n⚠️ <b>কারণ:</b> আপনার ফেসবুক একাউন্টটি (<code>{uid}</code>) নষ্ট বা ডেড হয়ে গেছে (Checkpoint/Suspended)।", 
+                        reply_markup=submit_tasks_keyboard()
+                    )
+                    return
 
-        state['uid'] = uid; state['step'] = 'AWAITING_SINGLE_DATA'
-        prompt = "🍪 Cookies পেস্ট করুন:" if "cookie" in cat else "🔐 2FA Secret Key দিন:"
-        return bot.send_message(chat_id, f"✅ Verified Live UID: <code>{uid}</code>\n\n{prompt}", reply_markup=cancel_keyboard())
+            state['uid'] = uid; state['step'] = 'AWAITING_SINGLE_DATA'
+            prompt = "🍪 Cookies পেস্ট করুন:" if "cookie" in cat else "🔐 2FA Secret Key দিন:"
+            bot.send_message(chat_id, f"✅ Verified Live UID: <code>{uid}</code>\n\n{prompt}", reply_markup=cancel_keyboard())
+        
+        # Offload network check so the UI thread isn't blocked
+        live_check_executor.submit(run_single_uid_check)
+        return
 
     elif step == 'AWAITING_SINGLE_DATA':
         safe_delete_msg(chat_id, message.message_id) 
@@ -2338,7 +2403,7 @@ if __name__ == "__main__":
         
         try:
             from waitress import serve
-            serve(flask_app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+            serve(flask_app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threads=200)
         except ImportError:
             flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threaded=True)
     else:
@@ -2348,7 +2413,7 @@ if __name__ == "__main__":
         def run_server():
             try:
                 from waitress import serve
-                serve(flask_app, host="0.0.0.0", port=10000)
+                serve(flask_app, host="0.0.0.0", port=10000, threads=200)
             except ImportError:
                 flask_app.run(host="0.0.0.0", port=10000, threaded=True)
                 
