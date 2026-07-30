@@ -930,35 +930,39 @@ def _process_main_router(message):
 
 # ================= 6. FLASK SERVER & PRODUCTION =================
 flask_app = Flask(__name__)
+
 @flask_app.route('/')
 def flask_home(): return "OEB NEXUS Cyber-AI Production Engine Active!"
+
 @flask_app.route(f'/{TOKEN}', methods=['POST'])
 def telegram_webhook():
     try:
         if request.headers.get('content-type') == 'application/json':
-            bot.process_new_updates([telebot.types.Update.de_json(request.get_data().decode('utf-8'))])
+            json_data = request.get_data().decode('utf-8')
+            update = telebot.types.Update.de_json(json_data)
+            bot.process_new_updates([update])
             return '', 200
-    except: pass
-    abort(403)
+    except Exception as e:
+        print(f"Webhook Error: {e}")
+    return '', 200
 
 if __name__ == "__main__":
-    ru = os.environ.get("RENDER_EXTERNAL_URL")
-    if ru:
-        try:
-            bot.remove_webhook(); time.sleep(1)
-            bot.set_webhook(url=f"{ru}/{TOKEN}")
-        except: pass
-        try:
-            from waitress import serve
-            serve(flask_app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threads=200)
-        except ImportError: flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threaded=True)
-    else:
-        try: bot.remove_webhook()
-        except: pass
-        def rs():
-            try:
-                from waitress import serve
-                serve(flask_app, host="0.0.0.0", port=10000, threads=200)
-            except ImportError: flask_app.run(host="0.0.0.0", port=10000, threaded=True)
-        threading.Thread(target=rs, daemon=True).start()
-        bot.infinity_polling(skip_pending=True)
+    print("Enterprise OEB NEXUS Cyber-AI Engine Active...")
+    
+    # Force set your Render Webhook URL directly here
+    MY_RENDER_URL = "https://my-telegram-bot-1-fj65.onrender.com"
+    
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+        webhook_link = f"{MY_RENDER_URL}/{TOKEN}"
+        bot.set_webhook(url=webhook_link)
+        print(f"[FORCED WEBHOOK LIVE]: {webhook_link}")
+    except Exception as e:
+        print(f"Webhook Set Error: {e}")
+
+    try:
+        from waitress import serve
+        serve(flask_app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threads=200)
+    except ImportError:
+        flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threaded=True)
