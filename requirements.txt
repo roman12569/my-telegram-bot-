@@ -1,6 +1,6 @@
 pyTelegramBotAPI
 requests
-pandas
+
 openpyxl
 Pillow
 Flask
