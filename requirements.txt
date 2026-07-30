@@ -1,12 +1,9 @@
 pyTelegramBotAPI
+pymongo
 requests
-
+pyotp
 openpyxl
 Pillow
-Flask
-gspread
-oauth2client
-pymongo
-pyotp
-cryptography
+flask
+waitress
 google-generativeai
