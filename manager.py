@@ -15,50 +15,22 @@ import requests
 import pyotp
 import uuid
 from openpyxl import load_workbook
-from PIL import Image, ImageDraw, ImageFont
-from flask import Flask, request, abort
+from flask import Flask
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from telebot.apihelper import ApiTelegramException
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
-import google.generativeai as genai
 
 # ================= 1. CONFIGURATION & SETUP =================
 TOKEN = os.environ.get("BOT_TOKEN", "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 6257034751))
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-LOG_CHANNEL_ID = -1003943094107
 BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID", -1003943094107))
+BOT_USERNAME = "OEB_NEXUS_bot"
 
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML", threaded=True, num_threads=150)
+bot = telebot.TeleBot(TOKEN, parse_mode="HTML", threaded=True, num_threads=50)
 
-def with_rate_limit_protection(func):
-    def wrapper(*args, **kwargs):
-        try: return func(*args, **kwargs)
-        except ApiTelegramException as e:
-            if e.error_code == 429:
-                retry_after = int(e.result_json.get('parameters', {}).get('retry_after', 3))
-                threading.Timer(retry_after + 0.5, lambda: wrapper(*args, **kwargs)).start()
-            return None
-        except Exception: return None
-    return wrapper
-
-bot.send_message = with_rate_limit_protection(bot.send_message)
-bot.reply_to = with_rate_limit_protection(bot.reply_to)
-bot.edit_message_text = with_rate_limit_protection(bot.edit_message_text)
-bot.send_document = with_rate_limit_protection(bot.send_document)
-
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel('gemini-1.5-flash')
-else: ai_model = None
-
-try: BOT_USERNAME = bot.get_me().username
-except: BOT_USERNAME = "online_bazar_manager_bot"
-
-mongo_client = MongoClient(MONGO_URL, maxPoolSize=200, minPoolSize=20, maxIdleTimeMS=45000, connectTimeoutMS=5000, socketTimeoutMS=5000)
+mongo_client = MongoClient(MONGO_URL, maxPoolSize=200, connectTimeoutMS=10000, socketTimeoutMS=10000)
 db = mongo_client['earning_bazar_advanced']
 
 users_col = db['users']
@@ -69,11 +41,7 @@ blacklisted_payloads_col = db['blacklisted_payloads']
 ai_logs_col = db['ai_logs']
 
 try:
-    submissions_col.create_index("track_id", unique=True, background=True)
     submissions_col.create_index("uid", unique=True, background=True)
-    submissions_col.create_index("chat_id", background=True)
-    submissions_col.create_index("status", background=True)
-    submissions_col.create_index("date_key", background=True)
 except: pass
 
 REQUIRED_CHANNELS = [
@@ -82,34 +50,14 @@ REQUIRED_CHANNELS = [
 ]
 BD_TIMEZONE = timezone(timedelta(hours=6))
 
-class GuaranteedBoundedExecutor:
-    def __init__(self, max_workers, max_queue_size=10000):
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-        self.semaphore = threading.Semaphore(max_queue_size)
-    def submit(self, fn, *args, **kwargs):
-        self.semaphore.acquire()
-        try:
-            future = self.executor.submit(fn, *args, **kwargs)
-            future.add_done_callback(lambda x: self.semaphore.release())
-            return future
-        except:
-            self.semaphore.release()
-            raise
-
-background_executor = GuaranteedBoundedExecutor(max_workers=100, max_queue_size=10000)
-heavy_task_executor = GuaranteedBoundedExecutor(max_workers=30, max_queue_size=5000)
-live_check_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
-cache_executor = concurrent.futures.ThreadPoolExecutor(max_workers=15)
+background_executor = concurrent.futures.ThreadPoolExecutor(max_workers=20)
+heavy_task_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+live_check_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
 class FastSettingsCache:
     def __init__(self):
         self.cache = {}
         self.lock = threading.Lock()
-        self._init_cache()
-    def _init_cache(self):
-        try:
-            for s in settings_col.find(): self.cache[s["_id"]] = s["value"]
-        except: pass
     def get(self, key, default):
         with self.lock:
             if key in self.cache: return self.cache[key]
@@ -119,155 +67,40 @@ class FastSettingsCache:
         return val
     def set(self, key, value):
         with self.lock: self.cache[key] = value
-        cache_executor.submit(lambda: settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True))
+        try: settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
+        except: pass
 
 fast_settings = FastSettingsCache()
 def get_setting(key, default): return fast_settings.get(key, default)
 def update_setting(key, value): fast_settings.set(key, value)
 
 class MongoDict:
-    def __init__(self, collection, max_cache_size=10000):
+    def __init__(self, collection):
         self.col = collection
-        self.cache = collections.OrderedDict()
-        self.max_cache_size = max_cache_size
+        self.cache = {}
         self.lock = threading.Lock()
     def get(self, key, default=None):
         with self.lock:
-            if key in self.cache:
-                self.cache.move_to_end(key)
-                return self.cache[key]
+            if key in self.cache: return self.cache[key]
         doc = self.col.find_one({"_id": key})
-        if doc:
-            val = doc.get("state", default)
-            with self.lock:
-                self.cache[key] = val
-                self.cache.move_to_end(key)
-                if len(self.cache) > self.max_cache_size: self.cache.popitem(last=False)
-            return val
-        return default
+        val = doc.get("state", default) if doc else default
+        with self.lock: self.cache[key] = val
+        return val
     def __setitem__(self, key, value):
-        with self.lock:
-            self.cache[key] = value
-            self.cache.move_to_end(key)
-            if len(self.cache) > self.max_cache_size: self.cache.popitem(last=False)
-        cache_executor.submit(lambda: self.col.update_one({"_id": key}, {"$set": {"state": value}}, upsert=True))
+        with self.lock: self.cache[key] = value
+        try: self.col.update_one({"_id": key}, {"$set": {"state": value}}, upsert=True)
+        except: pass
     def pop(self, key, default=None):
-        val = default
         with self.lock:
-            if key in self.cache: val = self.cache.pop(key)
-            else:
-                doc = self.col.find_one_and_delete({"_id": key})
-                if doc: val = doc.get("state", default)
-        cache_executor.submit(lambda: self.col.delete_one({"_id": key}))
+            val = self.cache.pop(key, default)
+        try: self.col.delete_one({"_id": key})
+        except: pass
         return val
 
 user_states = MongoDict(db['user_states'])
-CAT_MAP = {"fb_cookie": "FB Cookies", "fb_2fa": "FB 2FA", "ig_cookie": "IG Cookies", "ig_2fa": "IG 2FA"}
 
-# ================= 2. HELPERS & UTILITIES =================
 def get_bd_time(): return datetime.datetime.now(BD_TIMEZONE)
-
-def parse_iso_datetime(dt_val):
-    if not dt_val: return get_bd_time()
-    if isinstance(dt_val, datetime.datetime): return dt_val.replace(tzinfo=BD_TIMEZONE) if dt_val.tzinfo is None else dt_val.astimezone(BD_TIMEZONE)
-    if isinstance(dt_val, str):
-        try:
-            parsed = datetime.datetime.fromisoformat(dt_val)
-            return parsed.replace(tzinfo=BD_TIMEZONE) if parsed.tzinfo is None else parsed.astimezone(BD_TIMEZONE)
-        except: return get_bd_time()
-    return get_bd_time()
-
-def get_active_surge_bonus():
-    surge = get_setting("surge_pricing", {"active": False, "bonus": 0.0, "expires_at": None})
-    if surge.get("active"):
-        exp = parse_iso_datetime(surge.get("expires_at"))
-        if exp and get_bd_time() < exp: return float(surge.get("bonus", 0.0))
-    return 0.0
-
-def get_current_task_rate(cat_key):
-    return float(get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0}).get(cat_key, 5.0)) + get_active_surge_bonus()
-
-def log_ai_report(issue_type, description, fix_action):
-    def task():
-        ai_logs_col.insert_one({"timestamp": get_bd_time().strftime("%Y-%m-%d %H:%M:%S"), "type": issue_type, "description": description, "action": fix_action})
-        try: bot.send_message(ADMIN_ID, f"🧠 <b>AI AUTO-HEALING</b>\n• {issue_type}\n🛠 {fix_action[:150]}")
-        except: pass
-    background_executor.submit(task)
-
-def validate_strict_password(password, rule):
-    if not rule or rule.lower() == "none" or rule.strip() == "": return True
-    return str(password).strip().endswith(rule.strip())
-
-def extract_numeric_uid(text):
-    text = str(text).strip()
-    m1 = re.search(r'c_user=(\d{8,20})', text)
-    if m1: return m1.group(1)
-    m2 = re.search(r'(?:id=|\/|profile\.php\?id=|\/u\/)(\d{8,20})', text)
-    if m2: return m2.group(1)
-    m3 = re.search(r'\b(\d{8,20})\b', text)
-    if m3: return m3.group(1)
-    return None
-
-def is_valid_cookies(cookie_str):
-    c = str(cookie_str)
-    return ("c_user=" in c) or ("datr=" in c) or ("xs=" in c) or ("sessionid=" in c)
-
-def is_duplicate_uid(uid): return submissions_col.find_one({"uid": str(uid)}) is not None
-def generate_payload_hash(payload): return hashlib.sha256(re.sub(r'\s+', '', str(payload)).encode('utf-8')).hexdigest()
-def is_payload_blacklisted(p_hash): return blacklisted_payloads_col.find_one({"_id": p_hash}) is not None
-def generate_tracking_id(): return f"SUB-{int(get_bd_time().timestamp())}-{random.randint(100,999)}"
-def generate_withdraw_id(): return f"WDR-{int(get_bd_time().timestamp())}-{random.randint(100,999)}"
 def sanitize_html(text): return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") if text else "User"
-def safe_delete_msg(chat_id, message_id): background_executor.submit(lambda: _async_safe_delete(chat_id, message_id))
-def _async_safe_delete(chat_id, message_id):
-    try: bot.delete_message(chat_id, message_id)
-    except: pass
-
-UAS = [
-    "Mozilla/5.0 (Linux; Android 10; SM-A505F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 11; Pixel 4a) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Mobile Safari/537.36"
-]
-
-def check_live_account(uid):
-    try:
-        clean_uid = extract_numeric_uid(uid)
-        if not clean_uid: return False, "Invalid UID"
-        time.sleep(random.uniform(0.3, 1.2))
-        res = requests.get(f"https://m.facebook.com/profile.php?id={clean_uid}", headers={"User-Agent": random.choice(UAS), "Accept-Language": "en-US", "Sec-Fetch-Mode": "navigate"}, timeout=5.0, allow_redirects=True)
-        content = res.text.lower()
-        if res.status_code != 200: return False, "Suspended/Dead"
-        if "content=\"no-cache\"" in content or "not found" in content or "login" in res.url:
-            if "c_user" not in res.url and clean_uid not in res.url: return False, "Checkpoint"
-        if "profile_ring" in content or "mbasic_inline_feed_composer" in content or clean_uid in res.url: return True, "Live"
-        return False, "Suspended"
-    except: return False, "Timeout"
-
-def check_ig_username_live(username):
-    try:
-        clean_user = username.replace("@", "").strip()
-        time.sleep(random.uniform(0.2, 0.8))
-        res = requests.get(f"https://www.instagram.com/{clean_user}/", headers={"User-Agent": random.choice(UAS)}, timeout=5.0)
-        if res.status_code == 200 and "Page Not Found" not in res.text: return True, "Live"
-        return False, "Dead"
-    except: return True, "Assumed Live"
-
-def get_active_hold_dates():
-    dates = [r["_id"] for r in list(submissions_col.aggregate([{"$match": {"status": "Hold"}}, {"$group": {"_id": "$date_key"}}])) if r["_id"]]
-    dates.sort(reverse=True)
-    return dates
-
-def get_shift_config(): return get_setting("shift_config", {"current_date": get_bd_time().strftime("%Y-%m-%d"), "deadlines": {"fb_cookie": "21:20", "fb_2fa": "21:20", "ig_cookie": "20:20", "ig_2fa": "20:20", "default": "23:59"}})
-
-def is_submission_allowed(cat_key, req_time):
-    shift = get_shift_config()
-    if req_time.strftime("%Y-%m-%d") != shift["current_date"]: return False, f"⚠️ আজকের শিফট এখনো চালু হয়নি!"
-    deadline_str = shift["deadlines"].get(cat_key, shift["deadlines"].get("default", "23:59"))
-    try:
-        dh, dm = map(int, deadline_str.split(":"))
-        if req_time > req_time.replace(hour=dh, minute=dm, second=0, microsecond=0): return False, f"⚠️ ডেডলাইন {deadline_str} শেষ!"
-        return True, "Allowed"
-    except: return True, "Allowed"
 
 def get_user_data(chat_id):
     u = users_col.find_one({"_id": chat_id})
@@ -277,121 +110,9 @@ def get_user_data(chat_id):
         except: pass
     return u
 
-def update_user_field(chat_id, field, val): background_executor.submit(lambda: users_col.update_one({"_id": chat_id}, {"$set": {field: val}}, upsert=True))
-def is_user_banned(chat_id): return (users_col.find_one({"_id": chat_id}) or {}).get("banned", False)
-
-def send_private_backup_message(content, doc_buf=None, doc_name=None):
-    def task():
-        try:
-            safe_content = content[:3750] + "\n\n⚠️ <i>[Truncated]</i>" if len(content) > 3800 else content
-            if doc_buf and doc_name:
-                doc_buf.seek(0)
-                bot.send_document(BACKUP_CHANNEL_ID, (doc_name, doc_buf), caption=safe_content)
-            else: bot.send_message(BACKUP_CHANNEL_ID, safe_content)
-        except Exception as e: log_ai_report("Backup Error", str(e), "Check Backup Channel.")
-    background_executor.submit(task)
-
-def escrow_and_cleanup_daemon():
-    while True:
-        try:
-            now = get_bd_time()
-            if now.hour == 23 and now.minute == 55:
-                now_str = now.strftime("%Y-%m-%d")
-                out = f"📓 <b>DAILY DIARY [{now_str}]</b>\n\n"
-                for r in list(submissions_col.aggregate([{"$match": {"date_key": now_str}}, {"$group": {"_id": "$category", "count": {"$sum": 1}, "total": {"$sum": "$rate"}}}])):
-                    out += f"📌 {r['_id']}: {r['count']} টি (৳{r['total']:.2f})\n"
-                try: bot.send_message(ADMIN_ID, out)
-                except: pass
-                time.sleep(60)
-            elif now.hour == 0 and now.minute == 0:
-                deleted = submissions_col.delete_many({"status": {"$in": ["Approved", "Rejected"]}})
-                try: bot.send_message(ADMIN_ID, f"🧹 <b>NIGHTLY WIPE:</b> {deleted.deleted_count} DB Cleaned.")
-                except: pass
-                time.sleep(60)
-            time.sleep(30)
-        except: time.sleep(60)
-threading.Thread(target=escrow_and_cleanup_daemon, daemon=True).start()
-
-# ================= 3. KEYBOARDS & UI =================
-def main_bottom_keyboard(chat_id):
-    role = get_user_data(chat_id).get("role", "member")
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("⚡ কাজ জমা সেন্টার"), KeyboardButton("🛠 হেল্পার টুলস"))
-    markup.add(KeyboardButton("👤 প্রোফাইল ও ওয়ালেট"), KeyboardButton("🎁 রিওয়ার্ড ও সাপোর্ট"))
-    if role in ["sub_admin", "admin"] or chat_id == ADMIN_ID: markup.add(KeyboardButton("👑 এডমিন কন্ট্রোল সেন্টার"))
-    return markup
-
-def submit_tasks_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("📌 সিঙ্গেল জমা"), KeyboardButton("📦 বাল্ক জমা (Text)"))
-    markup.add(KeyboardButton("📊 এক্সেল ফাইল জমা"), KeyboardButton("⚙️ পাসওয়ার্ড নিয়ম"))
-    markup.add(KeyboardButton("🔙 পেছনে যান"), KeyboardButton("🏠 মেইন মেনু"))
-    return markup
-
-def category_bottom_keyboard():
-    r = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton(f"📄 FB Cookies (৳{r['fb_cookie']})"), KeyboardButton(f"🔐 FB 2FA (৳{r['fb_2fa']})"))
-    markup.add(KeyboardButton(f"📷 IG Cookies (৳{r['ig_cookie']})"), KeyboardButton(f"🔐 IG 2FA (৳{r['ig_2fa']})"))
-    for ck, ci in get_setting("custom_categories", {}).items():
-        markup.add(KeyboardButton(f"📌 {ci.get('name', 'Task')} (৳{float(ci.get('rate', 5.0)) + get_active_surge_bonus():.2f})"))
-    markup.add(KeyboardButton("🔙 কাজ জমা মেনুতে ফিরুন"), KeyboardButton("🏠 মেইন মেনু"))
-    return markup
-
-def helper_tools_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("🔑 2FA কোড জেনারেটর"), KeyboardButton("✉️ টেম্প ইমেইল"))
-    markup.add(KeyboardButton("🚀 বাল্ক FB লাইভ চেকার"), KeyboardButton("🚀 বাল্ক IG লাইভ চেকার"))
-    markup.add(KeyboardButton("🔙 পেছনে যান"), KeyboardButton("🏠 মেইন মেনু"))
-    return markup
-
-def account_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("💳 Withdraw"), KeyboardButton("🏠 মেইন মেনু"))
-    return markup
-
-def bonus_support_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("🎁 Claim Daily Bonus"), KeyboardButton("🏆 লিডারবোর্ড"))
-    markup.add(KeyboardButton("💬 এডমিন সাপোর্ট টিকিট"), KeyboardButton("🏠 মেইন মেনু"))
-    return markup
-
-def admin_bottom_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("📊 টাস্ক ও রিপোর্ট"), KeyboardButton("💳 ফাইন্যান্স ও সাব-এডমিন"))
-    markup.add(KeyboardButton("⚙️ সেটিংস ও শিফট"), KeyboardButton("📢 ইউজার ও প্যানেল"))
-    markup.add(KeyboardButton("🏠 মেইন মেনু"))
-    return markup
-
-def admin_sub_task_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("📊 স্মার্ট ড্যাশবোর্ড"), KeyboardButton("📂 ফাইল এক্সপোর্ট"))
-    markup.add(KeyboardButton("🤖 অটো-ম্যাচার"), KeyboardButton("🏛️ আর্কাইভ"))
-    markup.add(KeyboardButton("🔙 এডমিন প্যানেল"))
-    return markup
-
-def admin_sub_finance_keyboard():
-    pc = withdrawals_col.count_documents({"status": "Pending"})
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton(f"⏳ পেন্ডিং উইথড্রয়াল ({pc})"), KeyboardButton("👥 সাব-এডমিন ফাইন্যান্স"))
-    markup.add(KeyboardButton("🔙 এডমিন প্যানেল"))
-    return markup
-
-def admin_sub_settings_keyboard():
-    m = "🟢 ON" if get_setting("maintenance_mode", False) else "🔴 OFF"
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("⚙️ সেট রেট ও চার্জ"), KeyboardButton("📅 শিফট ও ডেডলাইন"))
-    markup.add(KeyboardButton("🔑 পাসওয়ার্ড নিয়ম"), KeyboardButton(f"🛠 মেইনটেনেন্স: {m}"))
-    markup.add(KeyboardButton("🔙 এডমিন প্যানেল"))
-    return markup
-
-def admin_sub_system_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("👤 ইউজার ম্যানেজার"), KeyboardButton("📢 ব্রডকাস্ট নোটিশ"))
-    markup.add(KeyboardButton("🧠 AI সিটেডেল অডিট"), KeyboardButton("🔙 এডমিন প্যানেল"))
-    return markup
-
-def cancel_keyboard(): return ReplyKeyboardMarkup(resize_keyboard=True, row_width=1).add(KeyboardButton("❌ বাতিল করুন"))
+def update_user_field(chat_id, field, val):
+    try: users_col.update_one({"_id": chat_id}, {"$set": {field: val}}, upsert=True)
+    except: pass
 
 def check_force_join(user_id):
     if user_id == ADMIN_ID: return True
@@ -402,14 +123,186 @@ def check_force_join(user_id):
         except: continue
     return True
 
-def admin_sub_system_keyboard():
+def generate_tracking_id(): return str(uuid.uuid4())[:8].upper()
+def generate_withdraw_id(): return "W" + str(uuid.uuid4())[:6].upper()
+def generate_payload_hash(payload): return hashlib.md5(str(payload).strip().encode('utf-8')).hexdigest()
+
+def is_duplicate_uid(uid):
+    return submissions_col.find_one({"uid": str(uid).strip()}) is not None
+
+def is_payload_blacklisted(ph):
+    return blacklisted_payloads_col.find_one({"hash": ph}) is not None
+
+def is_valid_cookies(text):
+    t = str(text)
+    return "c_user" in t and "xs" in t
+
+def extract_numeric_uid(text):
+    m = re.search(r'\b\d{8,20}\b', str(text))
+    return m.group(0) if m else None
+
+def validate_strict_password(pw, rule):
+    if not rule or str(rule).lower() == "none": return True
+    return str(pw).strip().endswith(str(rule).strip())
+
+def get_shift_config():
+    default_conf = {"current_date": get_bd_time().strftime("%Y-%m-%d"), "deadlines": {"fb_cookie": "21:20", "fb_2fa": "21:20", "ig_cookie": "20:20", "ig_2fa": "20:20", "default": "23:59"}}
+    c = get_setting("shift_config", default_conf)
+    if not isinstance(c, dict) or "deadlines" not in c:
+        update_setting("shift_config", default_conf)
+        return default_conf
+    return c
+
+def is_submission_allowed(cat_key, now_dt):
+    c = get_shift_config()
+    deadlines = c.get("deadlines", {})
+    dl_str = deadlines.get(cat_key, deadlines.get("default", "23:59"))
+    try:
+        hr, mn = map(int, dl_str.split(":"))
+        dl_time = now_dt.replace(hour=hr, minute=mn, second=0, microsecond=0)
+        if now_dt > dl_time:
+            return False, f"⚠️ শিফট বন্ধ! (ডেডলাইন: {dl_str})"
+    except: pass
+    return True, ""
+
+def get_current_task_rate(cat_key):
+    r = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
+    if cat_key in r: return float(r[cat_key])
+    cc = get_setting("custom_categories", {})
+    if cat_key in cc: return float(cc[cat_key].get("rate", 5.0))
+    return 5.0
+
+def check_live_account(uid):
+    try:
+        r = requests.get(f"https://www.facebook.com/{uid}", timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200 and "unauthorized" not in r.text.lower():
+            return True, "Live"
+    except: pass
+    return False, "Dead"
+
+def check_ig_username_live(username):
+    try:
+        r = requests.get(f"https://www.instagram.com/{username.strip('@')}/", timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200 and "page not found" not in r.text.lower():
+            return True, "Live"
+    except: pass
+    return False, "Dead"
+
+def get_active_hold_dates():
+    return sorted(list(submissions_col.distinct("date_key", {"status": "Hold"})))
+
+def send_private_backup_message(caption, file_obj=None, filename=None):
+    try:
+        if file_obj and filename:
+            file_obj.seek(0)
+            bot.send_document(BACKUP_CHANNEL_ID, file_obj, caption=caption)
+        else:
+            bot.send_message(BACKUP_CHANNEL_ID, caption)
+    except: pass
+
+# ================= 2. KEYBOARDS =================
+def main_bottom_keyboard(chat_id):
+    role = get_user_data(chat_id).get("role", "member")
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("👤 ইউজার ম্যানেজার"), KeyboardButton("📢 ব্রডকাস্ট নোটিশ"))
-    markup.add(KeyboardButton("🔍 ম্যানুয়াল আইডি সার্চ"), KeyboardButton("➕ কাস্টম ক্যাটাগরি"))
-    markup.add(KeyboardButton("🧠 AI সিটেডেল অডিট"), KeyboardButton("🔙 এডমিন প্যানেল"))
+    markup.add(KeyboardButton("⚡ কাজ জমা সেন্টার"), KeyboardButton("🛠 হেল্পার টুলস"))
+    markup.add(KeyboardButton("👤 প্রোফাইল ও ওয়ালেট"), KeyboardButton("🎁 রিওয়ার্ড ও সাপোর্ট"))
+    if role in ["sub_admin", "admin"] or chat_id == ADMIN_ID: markup.add(KeyboardButton("👑 এডমিন কন্ট্রোল সেন্টার"))
     return markup
 
-# ================= ⚡ CORE CALLBACK HANDLERS =================
+def submit_tasks_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(
+        KeyboardButton("📌 সিঙ্গেল জমা"), KeyboardButton("📦 বাল্ক জমা (Text)"),
+        KeyboardButton("📊 এক্সেল ফাইল জমা"), KeyboardButton("🔙 পেছনে যান"),
+        KeyboardButton("🏠 মেইন মেনু")
+    )
+
+def category_bottom_keyboard():
+    r = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(KeyboardButton(f"📄 FB Cookies (৳{r.get('fb_cookie', 5.0)})"), KeyboardButton(f"🔐 FB 2FA (৳{r.get('fb_2fa', 6.0)})"))
+    markup.add(KeyboardButton(f"📷 IG Cookies (৳{r.get('ig_cookie', 8.0)})"), KeyboardButton(f"🔐 IG 2FA (৳{r.get('ig_2fa', 10.0)})"))
+    for k, v in get_setting("custom_categories", {}).items():
+        markup.add(KeyboardButton(f"📌 {v['name']} (৳{v['rate']})"))
+    markup.add(KeyboardButton("🔙 কাজ জমা মেনুতে ফিরven"), KeyboardButton("🏠 মেইন মেনু"))
+    return markup
+
+def helper_tools_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(
+        KeyboardButton("🔑 2FA কোড জেনারেটর"), KeyboardButton("✉️ টেম্প ইমেইল"),
+        KeyboardButton("🚀 বাল্ক FB লাইভ চেকার"), KeyboardButton("🚀 বাল্ক IG লাইভ চেকার"),
+        KeyboardButton("🔙 পেছনে যান"), KeyboardButton("🏠 মেইন মেনু")
+    )
+
+def account_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(
+        KeyboardButton("💳 Withdraw"), KeyboardButton("⚙️ পাসওয়ার্ড নিয়ম"),
+        KeyboardButton("🏠 মেইন মেনু")
+    )
+
+def bonus_support_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(
+        KeyboardButton("🎁 Claim Daily Bonus"), KeyboardButton("🏆 লিডারবোর্ড"),
+        KeyboardButton("💬 এডমিন সাপোর্ট টিকিট"), KeyboardButton("🏠 মেইন মেনু")
+    )
+
+def admin_bottom_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(
+        KeyboardButton("📊 টাস্ক ও রিপোর্ট"), KeyboardButton("💳 ফাইন্যান্স ও সাব-এডমিন"),
+        KeyboardButton("⚙️ সেটিংস ও শিফট"), KeyboardButton("📢 ইউজার ও প্যানেল"),
+        KeyboardButton("🏠 মেইন মেনু")
+    )
+
+def admin_sub_task_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(
+        KeyboardButton("📊 স্মার্ট ড্যাশবোর্ড"), KeyboardButton("📂 ফাইল এক্সপোর্ট"),
+        KeyboardButton("🤖 অটো-ম্যাচার"), KeyboardButton("🏛️ আর্কাইভ"),
+        KeyboardButton("🔙 এডমিন প্যানেল")
+    )
+
+def admin_sub_settings_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(
+        KeyboardButton("⚙️ সেট রেট ও চার্জ"), KeyboardButton("🔑 পাসওয়ার্ড নিয়ম"),
+        KeyboardButton(f"🛠 মেইনটেনেন্স: {'ON' if get_setting('maintenance_mode', False) else 'OFF'}"),
+        KeyboardButton("📅 শিফট ও ডেডলাইন"), KeyboardButton("🔙 এডমিন প্যানেল")
+    )
+
+def admin_sub_finance_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(
+        KeyboardButton("⏳ পেন্ডিং উইথড্রয়াল"), KeyboardButton("👥 সাব-এডমিন ফাইন্যান্স"),
+        KeyboardButton("🔙 এডমিন প্যানেল")
+    )
+
+def admin_sub_system_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(
+        KeyboardButton("👤 ইউজার ম্যানেজার"), KeyboardButton("📢 ব্রডকাস্ট নোটিশ"),
+        KeyboardButton("🔍 ম্যানুয়াল আইডি সার্চ"), KeyboardButton("➕ কাস্টম ক্যাটাগরি"),
+        KeyboardButton("🧠 AI সিটেডেল অডিট"), KeyboardButton("🔙 এডমিন প্যানেল")
+    )
+
+def cancel_keyboard(): return ReplyKeyboardMarkup(resize_keyboard=True, row_width=1).add(KeyboardButton("❌ বাতিল করুন"))
+
+# ================= 3. COMMANDS & ROUTER =================
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    try:
+        chat_id = message.chat.id
+        u = get_user_data(chat_id)
+        if u.get("banned", False): return bot.reply_to(message, "🔴 অ্যাকাউন্ট স্থগিত!")
+        
+        user_states.pop(chat_id, None)
+
+        if not check_force_join(chat_id):
+            markup = InlineKeyboardMarkup(row_width=1)
+            for ch in REQUIRED_CHANNELS: markup.add(InlineKeyboardButton(f"📢 Join {ch['name']}", url=ch["url"]))
+            markup.add(InlineKeyboardButton("✅ Verify", callback_data="verify_join"))
+            return bot.send_message(chat_id, "🔒 <b>চ্যানেল ভেরিফিকেশন প্রয়োজন:</b>", reply_markup=markup)
+
+        bal, hbal = float(u.get("balance") or 0.0), float(u.get("hold_balance") or 0.0)
+        card = f"❖ <b>OEB NEXUS // SECURE CORE v6.0</b>\n\n👤 Operator: {sanitize_html(message.from_user.first_name)}\n🆔 User ID: <code>#{chat_id}</code>\n\n💳 Wallet: ৳ {bal:.2f} BDT\n⏳ Escrow: ৳ {hbal:.2f} BDT\n🛡️ Status: {'👑 Global Admin' if chat_id==ADMIN_ID else 'Member'}\n\n" + "____________________________________\n\n⚡ <i>Select an option from the terminal below:</i>"
+        bot.send_message(chat_id, card, reply_markup=main_bottom_keyboard(chat_id))
+    except Exception as e: print(f"Start Error: {e}")
+
+# ================= 4. CALLBACKS & ADMIN PANELS =================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_all_callbacks(call): background_executor.submit(lambda: _process_callbacks(call))
 
@@ -510,7 +403,7 @@ def _process_document(message):
     chat_id = message.chat.id
     u = get_user_data(chat_id)
     if chat_id != ADMIN_ID and get_setting("maintenance_mode", False) and u.get("role") != "sub_admin": return
-    if is_user_banned(chat_id): return
+    if u.get("banned", False): return
     st = user_states.get(chat_id)
 
     if st and st.get('step') == 'AWAITING_BUYER_REPORT' and chat_id == ADMIN_ID:
@@ -629,7 +522,7 @@ def _process_main_router(message):
     chat_id = message.chat.id
     u = get_user_data(chat_id)
     if chat_id != ADMIN_ID and get_setting("maintenance_mode", False) and u.get("role") != "sub_admin": return
-    if is_user_banned(chat_id): return
+    if u.get("banned", False): return
     text = message.text.strip() if message.text else ""
     st = user_states.get(chat_id) or {}
     
@@ -704,7 +597,7 @@ def _process_main_router(message):
         return bot.send_message(ADMIN_ID, f"👥 <b>Total Users:</b> {users_col.count_documents({})}\n🟢 <b>Active:</b> {users_col.count_documents({'banned': False})}")
     elif text == "🧠 AI সিটেডেল অডিট" and chat_id == ADMIN_ID:
         logs = list(ai_logs_col.find().sort("timestamp", -1).limit(5))
-        return bot.send_message(ADMIN_ID, "🧠 <b>AI LOGS</b>\n" + "".join([f"• {l['timestamp']}: {l['type']}\n" for l in logs]) if logs else "🟢 HEALTHY")
+        return bot.send_message(ADMIN_ID, "🧠 <b>AI LOGS</b>\n" + "".join([f"• {l.get('timestamp','N/A')}: {l.get('type','N/A')}\n" for l in logs]) if logs else "🟢 HEALTHY")
     
     # NEW FEATURES
     elif text == "🔍 ম্যানুয়াল আইডি সার্চ" and chat_id == ADMIN_ID:
@@ -720,7 +613,7 @@ def _process_main_router(message):
         return bot.send_message(chat_id, "💬 <b>বিস্তারিত লিখুন:</b>", reply_markup=cancel_keyboard())
     elif text == "🎁 Claim Daily Bonus":
         lb = u.get("last_bonus_date")
-        if parse_iso_datetime(lb) and (get_bd_time() - parse_iso_datetime(lb)) < timedelta(hours=24): return bot.send_message(chat_id, "⚠️ ২৪ ঘণ্টায় একবার!")
+        if lb and (get_bd_time() - datetime.datetime.fromisoformat(lb)) < timedelta(hours=24): return bot.send_message(chat_id, "⚠️ ২৪ ঘণ্টায় একবার!")
         update_user_field(chat_id, "balance", float(u.get("balance") or 0.0) + 2.0)
         update_user_field(chat_id, "last_bonus_date", get_bd_time().isoformat())
         return bot.send_message(chat_id, "🎉 ৳২.০০ বোনাস!")
@@ -745,13 +638,16 @@ def _process_main_router(message):
         b = float(u.get("virtual_wallet") if u.get("role") == "sub_admin" else u.get("balance") or 0.0)
         if b < 50.0: return bot.send_message(chat_id, f"⚠️ <b>সর্বনিম্ন ৳৫০!</b> (আছে ৳{b:.2f})", reply_markup=account_keyboard())
         m = InlineKeyboardMarkup().add(InlineKeyboardButton("বিকাশ", callback_data="w_method_bkash"), InlineKeyboardButton("বাইনান্স", callback_data="w_method_binance"))
-        return bot.send_message(chat_id, "💳 <b>মেথড সিলেক্ট করুন:</b>", reply_markup=m)
+        return bot.send_message(chat_id, f"💳 <b>মেথড সিলেক্ট করুন:</b>", reply_markup=m)
     elif text == "📦 বাল্ক জমা (Text)":
         user_states[chat_id] = {'step': 'AWAITING_BULK_TEXT'}
         return bot.send_message(chat_id, "📦 <b>কুকিজ পেস্ট করুন:</b>", reply_markup=cancel_keyboard())
     elif text == "📊 এক্সেল ফাইল জমা":
         user_states[chat_id] = {'step': 'AWAITING_EXCEL_FILE'}
         return bot.send_message(chat_id, "📊 <b>ফাইল পাঠান:</b>", reply_markup=cancel_keyboard())
+    elif text == "⚙️ পাসওয়ার্ড নিয়ম":
+        user_states[chat_id] = {'step': 'AWAITING_USER_SET_PASS'}
+        return bot.send_message(chat_id, "✏️ <b>আপনার নিজস্ব ফিক্সড পাসওয়ার্ড বা শেষ অংশটি দিন:</b>", reply_markup=cancel_keyboard())
     elif any(text.startswith(p) for p in ["📄 FB Cookies", "🔐 FB 2FA", "📷 IG Cookies", "🔐 IG 2FA"]) or text.startswith("📌"):
         c = "fb_cookie" 
         if "FB 2FA" in text: c = "fb_2fa"
@@ -785,8 +681,8 @@ def _process_main_router(message):
         user_states.pop(chat_id, None)
         bot.send_message(ADMIN_ID, f"📢 ব্রডকাস্ট পাঠানো হচ্ছে...", reply_markup=admin_sub_system_keyboard())
         def rb():
-            for u in list(users_col.find({"banned": False})):
-                try: bot.send_message(u["_id"], text); time.sleep(0.05)
+            for us in list(users_col.find({"banned": False})):
+                try: bot.send_message(us["_id"], text); time.sleep(0.05)
                 except: pass
         heavy_task_executor.submit(rb)
         return
@@ -796,7 +692,7 @@ def _process_main_router(message):
         s_uid = extract_numeric_uid(text) or text.strip()
         doc = submissions_col.find_one({"uid": s_uid})
         if not doc: return bot.send_message(chat_id, f"❌ <b>{s_uid}</b> পাওয়া যায়নি!", reply_markup=admin_sub_system_keyboard())
-        out = (f"🔍 <b>SEARCH RESULT</b>\n👤 <b>Worker:</b> <code>{doc.get('chat_id')}</code>\n🆔 <b>UID:</b> <code>{doc.get('uid')}</code>\n🔑 <b>Pass:</b> <code>{doc.get('password')}</code>\n📁 <b>Cat:</b> {doc.get('category')}\n📅 <b>Date:</b> {doc.get('date_str')}\n🛡️ <b>Status:</b> {doc.get('status')}\n\n📝 <b>Data:</b>\n<code>{sanitize_html(doc.get('payload')[:500])}</code>")
+        out = (f"🔍 <b>SEARCH RESULT</b>\n👤 <b>Worker:</b> <code>{doc.get('chat_id')}</code>\n🆔 <b>UID:</b> <code>{doc.get('uid')}</code>\n🔑 <b>Pass:</b> <code>{doc.get('password')}</code>\n📁 <b>Cat:</b> {doc.get('category_key')}\n📅 <b>Date:</b> {doc.get('date_str')}\n🛡️ <b>Status:</b> {doc.get('status')}\n\n📝 <b>Data:</b>\n<code>{sanitize_html(doc.get('payload','')[:500])}</code>")
         user_states.pop(chat_id, None)
         return bot.send_message(chat_id, out, reply_markup=admin_sub_system_keyboard())
     elif sp == 'AWAITING_NEW_CAT_NAME' and chat_id == ADMIN_ID:
@@ -814,6 +710,10 @@ def _process_main_router(message):
         except: return bot.send_message(chat_id, "❌ সংখ্যা দিন!", reply_markup=cancel_keyboard())
 
     # USER STATES
+    elif sp == 'AWAITING_USER_SET_PASS':
+        update_user_field(chat_id, "custom_password", text.strip())
+        user_states.pop(chat_id, None)
+        return bot.send_message(chat_id, f"✅ আপনার পাসওয়ার্ড <code>{sanitize_html(text.strip())}</code> সেভ করা হয়েছে!", reply_markup=account_keyboard())
     elif sp == 'AWAITING_SUPPORT_MSG':
         user_states.pop(chat_id, None)
         bot.send_message(ADMIN_ID, f"🎫 <b>টিকিট</b>\n👤 <code>{chat_id}</code>\n📝 {sanitize_html(text)}")
@@ -928,41 +828,20 @@ def _process_main_router(message):
         user_states[chat_id] = st
         return bot.send_message(chat_id, f"🎉 <b>জমা সফল!</b> (৳{r:.2f})\n► পরবর্তী আইডি দিন:", reply_markup=cancel_keyboard())
 
-# ================= 6. FLASK SERVER & PRODUCTION =================
+# ================= 6. FLASK & POLLING SERVER =================
 flask_app = Flask(__name__)
-
 @flask_app.route('/')
-def flask_home(): return "OEB NEXUS Cyber-AI Production Engine Active!"
-
-@flask_app.route(f'/{TOKEN}', methods=['POST'])
-def telegram_webhook():
-    try:
-        if request.headers.get('content-type') == 'application/json':
-            json_data = request.get_data().decode('utf-8')
-            update = telebot.types.Update.de_json(json_data)
-            bot.process_new_updates([update])
-            return '', 200
-    except Exception as e:
-        print(f"Webhook Error: {e}")
-    return '', 200
+def flask_home(): return "OEB NEXUS Production Engine Active (Polling Mode)!"
 
 if __name__ == "__main__":
-    print("Enterprise OEB NEXUS Cyber-AI Engine Active...")
-    
-    # Force set your Render Webhook URL directly here
-    MY_RENDER_URL = "https://my-telegram-bot-1-fj65.onrender.com"
+    print("OEB NEXUS Enterprise Engine Starting (Polling Mode)...")
+    def run_web():
+        flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    threading.Thread(target=run_web, daemon=True).start()
     
     try:
         bot.remove_webhook()
         time.sleep(1)
-        webhook_link = f"{MY_RENDER_URL}/{TOKEN}"
-        bot.set_webhook(url=webhook_link)
-        print(f"[FORCED WEBHOOK LIVE]: {webhook_link}")
-    except Exception as e:
-        print(f"Webhook Set Error: {e}")
-
-    try:
-        from waitress import serve
-        serve(flask_app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threads=200)
-    except ImportError:
-        flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threaded=True)
+    except: pass
+    
+    bot.infinity_polling(skip_pending=True)
