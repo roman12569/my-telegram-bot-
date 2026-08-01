@@ -1,9 +1,8 @@
 pyTelegramBotAPI
 pymongo
 requests
-pyotp
 openpyxl
 Pillow
-flask
-waitress
+pyotp
 google-generativeai
+waitress
