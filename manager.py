@@ -1,53 +1,28 @@
-# ==============================================================================
-# OEB NEXUS - PART 1: Core Architecture, Imports, DB, Caching & Server Engine
-# ==============================================================================
-# CRITICAL: This part contains ALL global imports, configurations, database 
-# connections, thread executors, and caching systems. DO NOT duplicate these 
-# in subsequent parts.
 
-import os
-import gc
-import io
-import re
-import csv
-import time
-import random
-import string
-import hashlib
-import threading
-import collections
-import concurrent.futures
+import os, gc, io, re, csv, time, random, string, hashlib, threading, collections, concurrent.futures
 from datetime import datetime, timedelta, timezone
-
-import requests
-import openpyxl
-import pyotp
-import telebot
+import requests, openpyxl, pyotp, telebot
 from telebot import types
 from telebot.apihelper import ApiTelegramException
-
 from flask import Flask
 from waitress import serve
-
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 # ==========================================
-# 1. Environment Variables & Constants
+# 1. ENV & CONFIG
 # ==========================================
-BOT_TOKEN = os.getenv("BOT_TOKEN","8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4")
-MONGO_URL = os.getenv("MONGO_URL","mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4")
+MONGO_URL = os.getenv("MONGO_URL", "mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6257034751"))
 BACKUP_CHANNEL_ID = int(os.getenv("BACKUP_CHANNEL_ID", "-1003943094107"))
 
 BD_TIMEZONE = timezone(timedelta(hours=6))
 
 UAS = [
-    "Mozilla/5.0 (Linux; Android 13; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 13; SM-G973F) AppleWebKit/537.36 Chrome/114.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1"
 ]
-
 REQUIRED_CHANNELS = [
     {"name": "Online Earning Bazar™🍀", "username": "@earningbazar0", "url": "https://t.me/earningbazar0"},
     {"name": "ONLINE EARNING METHOD", "username": "@onlineearningmethod5", "url": "https://t.me/onlineearningmethod5"},
@@ -55,1652 +30,703 @@ REQUIRED_CHANNELS = [
 ]
 
 # ==========================================
-# 2. Bot & Optimized MongoDB Connection
+# 2. MULTI-LANGUAGE SUPPORT (BN & EN)
+# ==========================================
+LANG = {
+    "en": {
+        "welcome": "🏠 <b>Welcome to OEB NEXUS!</b>\n\n━━━━━━━━━━━━━━━━━━\n✨ Select an option below:",
+        "btn_submit": "📦 Submit Tasks", "btn_tools": "🛠 Helper Tools",
+        "btn_wallet": "💼 Profile & Wallet", "btn_reward": "🎁 Reward & Support",
+        "btn_admin": "⚙️ Admin Center", "btn_back": "🔙 Back", "btn_cancel": "❌ Cancel",
+        "btn_main": "🏠 Main Menu", "btn_balance": "💰 My Balance", "btn_withdraw": "💸 Withdraw",
+        "btn_tx_history": "📜 Tx History", "btn_bonus": "🎁 Daily Bonus", "btn_support": "📞 Support",
+        "btn_temp_email": "📧 Temp Email", "btn_2fa": "🔐 2FA Gen", "btn_leaderboard": "🏆 Leaderboard",
+        "btn_single": "📝 Single", "btn_bulk": "📑 Bulk Text", "btn_excel": "📊 Excel/CSV",
+        "btn_task_mgmt": "📋 Task Mgmt", "btn_finance": "💰 Finance", "btn_settings": "⚙️ Settings", "btn_system": "🖥 System",
+        "btn_buyer_report": "📊 Buyer Report", "btn_force_close": "🚫 Force Close", "btn_export": "📥 Export Data",
+        "lang_changed": "✅ Language changed to English!", "invalid_doc": "❌ Please use the menu to start a file submission first.",
+        "send_uid": "✅ <b>Category Set!</b>\n\n━━━━━━━━━━━━━━━━━━\n📩 Now send the <b>UID</b>:",
+        "send_payload": "📦 <b>UID Received!</b>\n\n━━━━━━━━━━━━━━━━━━\n📩 Now send the <b>Payload</b> (Cookie/2FA):",
+        "send_pass": "🔐 <b>Confirmation Required</b>\n\n━━━━━━━━━━━━━━━━━━\n🔑 Enter your <b>Password</b> to confirm:",
+        "balance_msg": "💼 <b>Wallet Details</b>\n\n━━━━━━━━━━━━━━━━━━\n💵 <b>Balance:</b> {balance} BDT\n🏦 <b>Hold Balance:</b> {hold} BDT\n💎 <b>Virtual Wallet:</b> {virtual} BDT",
+        "bonus_claimed": "🎉 <b>Bonus Claimed!</b>\n\n━━━━━━━━━━━━━━━━━━\n💰 +1.0 BDT added to your balance.",
+        "bonus_already": "⚠️ <b>Already Claimed!</b>\n\nYou have already claimed today's bonus. Come back tomorrow!",
+        "support_msg": "📞 <b>Need Help?</b>\n\n━━━━━━━━━━━━━━━━━━\n👨‍💻 Contact Admin: @oeb_support",
+        "no_tx": "📜 <b>No Transactions</b>\n\nYou have no recent transactions.",
+        "tx_msg": "📜 <b>Recent Transactions</b>\n\n━━━━━━━━━━━━━━━━━━",
+        "select_sub_type": "📦 <b>Select Submission Type:</b>", "select_tool": "🛠 <b>Select a Tool:</b>",
+        "select_wallet": "💼 <b>Wallet Options:</b>", "select_reward": "🎁 <b>Rewards & Support:</b>",
+        "admin_welcome": "⚙️ <b>Admin Control Center</b>\n\n━━━━━━━━━━━━━━━━━━\n👑 Select an admin module:",
+        "select_cat": "📦 <b>Select Task Category:</b>\n\n💡 <i>Rates include active surge bonus.</i>",
+        "withdraw_msg": "💸 <b>Withdrawal</b>\n\n━━━━━━━━━━━━━━━━━━\n⚠️ Minimum withdrawal: 50 BDT.\n📩 Send amount to withdraw:",
+        "task_saved": "✅ <b>Task Saved Successfully!</b>\n\n━━━━━━━━━━━━━━━━━━\n🎫 <b>Track ID:</b> <code>{tid}</code>\n💰 <b>Rate:</b> {rate} BDT\n\n🔄 <i>Send next UID or click Cancel.</i>",
+        "bulk_processing": "⏳ <b>Processing Bulk Text...</b>\n\n━━━━━━━━━━━━━━━━━━\n🔄 Please wait, this may take a few moments.",
+        "bulk_done": "✅ <b>Bulk Processing Complete!</b>\n\n━━━━━━━━━━━━━━━━━━\n📥 <b>Accepted:</b> {count}\n💰 <b>Total Payout:</b> {payout} BDT",
+        "file_processing": "⏳ <b>Processing File...</b>\n\n━━━━━━━━━━━━━━━━━━\n🔄 Extracting and verifying data.",
+        "file_done": "✅ <b>File Processing Complete!</b>\n\n━━━━━━━━━━━━━━━━━━\n📥 <b>Accepted:</b> {count}\n💰 <b>Total Payout:</b> {payout} BDT"
+    },
+    "bn": {
+        "welcome": "🏠 <b>OEB NEXUS এ স্বাগতম!</b>\n\n━━━━━━━━━━━━━━━━━━\n✨ নিচ থেকে একটি অপশন সিলেক্ট করুন:",
+        "btn_submit": "📦 টাস্ক সাবমিট", "btn_tools": "🛠 হেল্পার টুলস",
+        "btn_wallet": "💼 প্রোফাইল ও ওয়ালেট", "btn_reward": "🎁 রিওয়ার্ড ও সাপোর্ট",
+        "btn_admin": "⚙️ অ্যাডমিন প্যানেল", "btn_back": "🔙 ব্যাক", "btn_cancel": "❌ ক্যান্সেল",
+        "btn_main": "🏠 মেইন মেনু", "btn_balance": "💰 আমার ব্যালেন্স", "btn_withdraw": "💸 উইথড্র",
+        "btn_tx_history": "📜 হিস্টরি", "btn_bonus": "🎁 ডেইলি বোনাস", "btn_support": "📞 সাপোর্ট",
+        "btn_temp_email": "📧 টেম্প ইমেইল", "btn_2fa": "🔐 2FA জেনারেটর", "btn_leaderboard": "🏆 লিডারবোর্ড",
+        "btn_single": "📝 সিঙ্গেল", "btn_bulk": "📑 বাল্ক টেক্সট", "btn_excel": "📊 এক্সেল ফাইল",
+        "btn_task_mgmt": "📋 টাস্ক ম্যানেজ", "btn_finance": "💰 ফাইন্যান্স", "btn_settings": "⚙️ সেটিংস", "btn_system": "🖥 সিস্টেম",
+        "btn_buyer_report": "📊 বায়ার রিপোর্ট", "btn_force_close": "🚫 ফোর্স ক্লোজ", "btn_export": "📥 এক্সপোর্ট",
+        "lang_changed": "✅ ভাষা বাংলায় পরিবর্তন করা হয়েছে!", "invalid_doc": "❌ ফাইল সাবমিট করতে আগে মেনু থেকে অপশন নিন।",
+        "send_uid": "✅ <b>ক্যাটাগরি সেট!</b>\n\n━━━━━━━━━━━━━━━━━━\n📩 এবার <b>UID</b> পাঠান:",
+        "send_payload": "📦 <b>UID পেয়েছি!</b>\n\n━━━━━━━━━━━━━━━━━━\n📩 এবার <b>Payload</b> (Cookie/2FA) পাঠান:",
+        "send_pass": "🔐 <b>কনফার্মেশন প্রয়োজন</b>\n\n━━━━━━━━━━━━━━━━━━\n🔑 কনফার্ম করতে আপনার <b>পাসওয়ার্ড</b> দিন:",
+        "balance_msg": "💼 <b>ওয়ালেট ডিটেইলস</b>\n\n━━━━━━━━━━━━━━━━━━\n💵 <b>ব্যালেন্স:</b> {balance} BDT\n🏦 <b>হোল্ড ব্যালেন্স:</b> {hold} BDT\n💎 <b>ভার্চুয়াল ওয়ালেট:</b> {virtual} BDT",
+        "bonus_claimed": "🎉 <b>বোনাস ক্লেইম!</b>\n\n━━━━━━━━━━━━━━━━━━\n💰 ১.০ BDT আপনার ব্যালেন্সে যুক্ত হয়েছে।",
+        "bonus_already": "⚠️ <b>ইতিমধ্যে নেওয়া হয়েছে!</b>\n\nআপনি আজকের বোনাস নিয়েছেন। আগামীকাল আবার আসুন!",
+        "support_msg": "📞 <b>সাহায্য দরকার?</b>\n\n━━━━━━━━━━━━━━━━━━\n👨‍💻 এডমিন কন্টাক্ট: @oeb_support",
+        "no_tx": "📜 <b>কোনো ট্রানজাকশন নেই</b>\n\nআপনার কোনো সাম্প্রতিক ট্রানজাকশন নেই।",
+        "tx_msg": "📜 <b>সাম্প্রতিক ট্রানজাকশন</b>\n\n━━━━━━━━━━━━━━━━━━",
+        "select_sub_type": "📦 <b>সাবমিশন টাইপ সিলেক্ট করুন:</b>", "select_tool": "🛠 <b>একটি টুল সিলেক্ট করুন:</b>",
+        "select_wallet": "💼 <b>ওয়ালেট অপশন:</b>", "select_reward": "🎁 <b>রিওয়ার্ড ও সাপোর্ট:</b>",
+        "admin_welcome": "⚙️ <b>অ্যাডমিন কন্ট্রোল সেন্টার</b>\n\n━━━━━━━━━━━━━━━━━━\n👑 একটি অ্যাডমিন মডিউল সিলেক্ট করুন:",
+        "select_cat": "📦 <b>টাস্ক ক্যাটাগরি সিলেক্ট করুন:</b>\n\n💡 <i>রেটের সাথে সার্জ বোনাস যুক্ত।</i>",
+        "withdraw_msg": "💸 <b>উইথড্র</b>\n\n━━━━━━━━━━━━━━━━━━\n⚠️ সর্বনিম্ন উইথড্র: 50 BDT।\n📩 উইথড্র করার পরিমাণ পাঠান:",
+        "task_saved": "✅ <b>টাস্ক সফলভাবে সেভ হয়েছে!</b>\n\n━━━━━━━━━━━━━━━━━━\n🎫 <b>ট্র্যাক আইডি:</b> <code>{tid}</code>\n💰 <b>রেট:</b> {rate} BDT\n\n🔄 <i>পরবর্তী UID পাঠান অথবা ক্যান্সেল করুন।</i>",
+        "bulk_processing": "⏳ <b>বাল্ক টেক্সট প্রসেসিং...</b>\n\n━━━━━━━━━━━━━━━━━━\n🔄 অপেক্ষা করুন, এটি কিছুটা সময় নিতে পারে।",
+        "bulk_done": "✅ <b>বাল্ক প্রসেসিং সম্পন্ন!</b>\n\n━━━━━━━━━━━━━━━━━━\n📥 <b>গৃহীত:</b> {count}\n💰 <b>মোট পেআউট:</b> {payout} BDT",
+        "file_processing": "⏳ <b>ফাইল প্রসেসিং...</b>\n\n━━━━━━━━━━━━━━━━━━\n🔄 ডেটা এক্সট্রাক্ট এবং ভেরিফাই করা হচ্ছে।",
+        "file_done": "✅ <b>ফাইল প্রসেসিং সম্পন্ন!</b>\n\n━━━━━━━━━━━━━━━━━━\n📥 <b>গৃহীত:</b> {count}\n💰 <b>মোট পেআউট:</b> {payout} BDT"
+    }
+}
+
+def get_text(key, chat_id):
+    user = get_user_data(chat_id)
+    lang = user.get("lang", "bn")
+    return LANG.get(lang, LANG["bn"]).get(key, key)
+
+# ==========================================
+# 3. DB & CACHE SETUP
 # ==========================================
 bot = telebot.TeleBot(BOT_TOKEN)
-
-mongo_client = MongoClient(
-    MONGO_URL,
-    maxPoolSize=20,
-    minPoolSize=5,
-    socketTimeoutMS=10000,
-    connect=False
-)
-
+mongo_client = MongoClient(MONGO_URL, maxPoolSize=20, minPoolSize=5, socketTimeoutMS=10000, connect=False)
 db = mongo_client["earning_bazar_advanced"]
-users_col = db["users"]
-submissions_col = db["submissions"]
-settings_col = db["settings"]
-withdrawals_col = db["withdrawals"]
-blacklisted_payloads_col = db["blacklisted_payloads"]
-ai_logs_col = db["ai_logs"]
-
-# Background indexes for performance
+users_col, submissions_col, settings_col = db["users"], db["submissions"], db["settings"]
+withdrawals_col, blacklisted_payloads_col, ai_logs_col = db["withdrawals"], db["blacklisted_payloads"], db["ai_logs"]
 submissions_col.create_index([("track_id", 1)], unique=True, background=True)
 submissions_col.create_index([("uid", 1)], background=True)
-submissions_col.create_index([("date_key", 1)], background=True)
-submissions_col.create_index([("status", 1)], background=True)
 
-# ==========================================
-# 3. Strict RAM Protection (Bounded Executors)
-# ==========================================
 class GuaranteedBoundedExecutor:
     def __init__(self, max_workers, max_queue_size=None):
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-        self.max_queue_size = max_queue_size
-        self.queue_semaphore = threading.Semaphore(max_queue_size) if max_queue_size else None
-
+        self.sem = threading.Semaphore(max_queue_size) if max_queue_size else None
     def submit(self, fn, *args, **kwargs):
-        if self.queue_semaphore:
-            if not self.queue_semaphore.acquire(blocking=False):
-                return None
-        return self.executor.submit(self._task_wrapper, fn, *args, **kwargs)
-
-    def _task_wrapper(self, fn, *args, **kwargs):
-        try:
-            return fn(*args, **kwargs)
+        if self.sem and not self.sem.acquire(blocking=False): return None
+        return self.executor.submit(self._wrap, fn, *args, **kwargs)
+    def _wrap(self, fn, *args, **kwargs):
+        try: return fn(*args, **kwargs)
         finally:
-            if self.queue_semaphore:
-                self.queue_semaphore.release()
+            if self.sem: self.sem.release()
 
-    def shutdown(self, wait=True):
-        self.executor.shutdown(wait=wait)
+background_executor = GuaranteedBoundedExecutor(3, 100)
+heavy_task_executor = GuaranteedBoundedExecutor(2, 50)
+live_check_executor = GuaranteedBoundedExecutor(2, 100)
+cache_executor = concurrent.futures.ThreadPoolExecutor(2)
 
-# Initialize specific executors to prevent RAM overflow
-background_executor = GuaranteedBoundedExecutor(max_workers=3, max_queue_size=100)
-heavy_task_executor = GuaranteedBoundedExecutor(max_workers=2, max_queue_size=50)
-live_check_executor = GuaranteedBoundedExecutor(max_workers=2, max_queue_size=100)
-cache_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="CacheSync")
-
-# ==========================================
-# 4. In-Memory Caching System (MongoDB Saver)
-# ==========================================
 class FastSettingsCache:
     def __init__(self):
-        self.lock = threading.Lock()
-        self.cache = {}
-        self._load_initial_cache()
-
-    def _load_initial_cache(self):
-        try:
-            for doc in settings_col.find():
-                if 'key' in doc and 'value' in doc:
-                    self.cache[doc['key']] = doc['value']
-        except Exception as e:
-            print(f"[FastSettingsCache] Init error: {e}")
-
+        self.lock, self.cache = threading.Lock(), {}
+        for doc in settings_col.find(): self.cache[doc['key']] = doc['value']
     def get(self, key, default=None):
         with self.lock:
-            if key in self.cache:
-                return self.cache[key]
-        db_doc = settings_col.find_one({"key": key})
-        if db_doc and 'value' in db_doc:
-            val = db_doc['value']
-            with self.lock:
-                if key not in self.cache:
-                    self.cache[key] = val
-            return val
+            if key in self.cache: return self.cache[key]
+        doc = settings_col.find_one({"key": key})
+        if doc: 
+            with self.lock: self.cache[key] = doc['value']
+            return doc['value']
         return default
-
     def set(self, key, value):
-        with self.lock:
-            self.cache[key] = value
-        cache_executor.submit(self._async_db_update, key, value)
-
-    def _async_db_update(self, key, value):
-        try:
-            settings_col.update_one({"key": key}, {"$set": {"value": value}}, upsert=True)
-        except Exception as e:
-            print(f"[FastSettingsCache] Async update failed: {e}")
+        with self.lock: self.cache[key] = value
+        cache_executor.submit(lambda: settings_col.update_one({"key": key}, {"$set": {"value": value}}, upsert=True))
 
 class MongoDict:
-    def __init__(self, collection, max_cache_size=2000):
-        self.collection = collection
-        self.max_cache_size = max_cache_size
-        self.lock = threading.Lock()
+    def __init__(self, col, max_size=2000):
+        self.col, self.max, self.lock = col, max_size, threading.Lock()
         self.cache = collections.OrderedDict()
-
     def get(self, key, default=None):
         with self.lock:
             if key in self.cache:
-                self.cache.move_to_end(key)
-                return self.cache[key]
-        db_doc = self.collection.find_one({"_id": key})
-        if db_doc and 'value' in db_doc:
-            val = db_doc['value']
+                self.cache.move_to_end(key); return self.cache[key]
+        doc = self.col.find_one({"_id": key})
+        if doc and 'value' in doc:
             with self.lock:
-                if key in self.cache:
-                    self.cache.move_to_end(key)
-                    return self.cache[key]
-                self.cache[key] = val
-                self.cache.move_to_end(key)
-                if len(self.cache) > self.max_cache_size:
-                    self.cache.popitem(last=False)
-            return val
+                self.cache[key] = doc['value']; self.cache.move_to_end(key)
+                if len(self.cache) > self.max: self.cache.popitem(last=False)
+            return doc['value']
         return default
-
     def __setitem__(self, key, value):
         with self.lock:
-            if key in self.cache:
-                self.cache.move_to_end(key)
-            self.cache[key] = value
-            if len(self.cache) > self.max_cache_size:
-                self.cache.popitem(last=False)
-        cache_executor.submit(self._async_db_upsert, key, value)
-
+            self.cache[key] = value; self.cache.move_to_end(key)
+            if len(self.cache) > self.max: self.cache.popitem(last=False)
+        cache_executor.submit(lambda: self.col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True))
     def pop(self, key, default=None):
-        with self.lock:
-            val = self.cache.pop(key, default)
-        if val is not default:
-            cache_executor.submit(self._async_db_delete, key)
-            return val
-        return default
+        with self.lock: val = self.cache.pop(key, default)
+        if val is not default: cache_executor.submit(lambda: self.col.delete_one({"_id": key}))
+        return val
 
-    def _async_db_upsert(self, key, value):
-        try:
-            self.collection.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
-        except Exception as e:
-            print(f"[MongoDict] Async upsert failed: {e}")
-
-    def _async_db_delete(self, key):
-        try:
-            self.collection.delete_one({"_id": key})
-        except Exception as e:
-            print(f"[MongoDict] Async delete failed: {e}")
-
-# Initialize Cache Instances
 fast_settings = FastSettingsCache()
-user_states = MongoDict(db['user_states'], max_cache_size=2000)
+user_states = MongoDict(db['user_states'])
+def get_setting(k, d=None): return fast_settings.get(k, d)
+def update_setting(k, v): fast_settings.set(k, v)
 
-def get_setting(key, default=None):
-    return fast_settings.get(key, default)
-
-def update_setting(key, value):
-    fast_settings.set(key, value)
-
-# ==========================================
-# 5. Time Utilities
-# ==========================================
-def get_bd_time():
-    return datetime.now(BD_TIMEZONE)
-
-def parse_iso_datetime(dt_val):
-    if dt_val is None: return None
+def get_bd_time(): return datetime.now(BD_TIMEZONE)
+def parse_iso(dt):
+    if not dt: return None
     try:
-        if isinstance(dt_val, str):
-            dt = datetime.fromisoformat(dt_val)
-        elif isinstance(dt_val, datetime):
-            dt = dt_val
-        else:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=BD_TIMEZONE)
-        else:
-            dt = dt.astimezone(BD_TIMEZONE)
-        return dt
-    except (ValueError, TypeError):
-        return None
+        d = datetime.fromisoformat(dt) if isinstance(dt, str) else dt
+        return d.replace(tzinfo=BD_TIMEZONE) if d.tzinfo is None else d.astimezone(BD_TIMEZONE)
+    except: return None
 
 # ==========================================
-# 6. 24/7 Production Server (Flask + Waitress)
-# ==========================================
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "OEB NEXUS Engine Active"
-
-def run_web():
-    serve(app, host='0.0.0.0', port=10000)
-
-# NOTE: The actual execution block (starting the web thread and bot polling) 
-# is intentionally omitted here and placed at the very end of Part 10 to ensure 
-# all handlers are registered before the bot starts polling.
-
-
-
-# ==============================================================================
-# OEB NEXUS - PART 2: Core Utilities, Security, User Management & Nightly Daemon
-# ==============================================================================
-# DEPENDENCY: Assumes Part 1 globals (bot, db, collections, executors, time utils) exist.
-
-# ==========================================
-# 1. String Sanitization & ID Generators
+# 4. CORE UTILITIES & SECURITY
 # ==========================================
 def sanitize_html(text):
-    """Strictly sanitizes text for Telegram's HTML parse mode."""
-    if not text:
-        return "User"
-    text = str(text)
-    # Order is critical to prevent double-escaping
-    text = text.replace("&", "&amp;")
-    text = text.replace("<", "&lt;")
-    text = text.replace(">", "&gt;")
-    return text
+    if not text: return "User"
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def generate_tracking_id():
-    """Generates a unique tracking ID for submissions."""
-    timestamp = int(get_bd_time().timestamp())
-    random_suffix = random.randint(100, 999)
-    return f"SUB-{timestamp}-{random_suffix}"
+def get_user_data(cid):
+    u = users_col.find_one({"_id": cid})
+    if not u:
+        nu = {"_id": cid, "username": "", "first_name": "Worker", "balance": 0.0, "hold_balance": 0.0, 
+              "banned": False, "custom_password": "", "role": "member", "virtual_wallet": 0.0, "lang": "bn", "last_bonus_date": None}
+        try: users_col.insert_one(nu); return nu
+        except DuplicateKeyError: return users_col.find_one({"_id": cid})
+    return u
 
-def generate_withdraw_id():
-    """Generates a unique withdrawal ID."""
-    timestamp = int(get_bd_time().timestamp())
-    random_suffix = random.randint(100, 999)
-    return f"WDR-{timestamp}-{random_suffix}"
+def update_user_field(cid, f, v):
+    if f == "_id": return
+    background_executor.submit(lambda: users_col.update_one({"_id": cid}, {"$set": {f: v}}, upsert=True))
 
-# ==========================================
-# 2. User Data & State Management
-# ==========================================
-def get_user_data(chat_id):
-    """Fetches user data. Creates a new document if the user doesn't exist."""
-    user = users_col.find_one({"_id": chat_id})
-    if not user:
-        new_user = {
-            "_id": chat_id,
-            "username": "",
-            "first_name": "Worker",
-            "balance": 0.0,
-            "hold_balance": 0.0,
-            "banned": False,
-            "custom_password": "",
-            "role": "member",
-            "virtual_wallet": 0.0,
-            "assigned_sub_admin": None,
-            "last_bonus_date": None
-        }
+def is_user_banned(cid): 
+    u = users_col.find_one({"_id": cid}, {"banned": 1})
+    return u.get("banned", False) if u else False
+
+def check_force_join(uid):
+    if uid == ADMIN_ID: return True
+    for ch in REQUIRED_CHANNELS:
         try:
-            users_col.insert_one(new_user)
-            return new_user
-        except DuplicateKeyError:
-            # Race condition handled: fetch the newly created document
-            return users_col.find_one({"_id": chat_id})
-    return user
-
-def update_user_field(chat_id, field, val):
-    """Asynchronously updates a specific field in the user's document."""
-    if field == "_id":
-        return
-    def _db_update():
-        try:
-            users_col.update_one({"_id": chat_id}, {"$set": {field: val}}, upsert=True)
-        except Exception as e:
-            print(f"[AsyncUpdate] Failed to update {field} for {chat_id}: {e}")
-    background_executor.submit(_db_update)
-
-def is_user_banned(chat_id):
-    """Checks if a user is banned."""
-    user = users_col.find_one({"_id": chat_id}, {"banned": 1})
-    return user.get("banned", False) if user else False
-
-# ==========================================
-# 3. Force Join Validator
-# ==========================================
-def check_force_join(user_id):
-    """Verifies if the user has joined all required channels."""
-    if user_id == ADMIN_ID:
-        return True
-    for channel in REQUIRED_CHANNELS:
-        try:
-            member = bot.get_chat_member(channel["username"], user_id)
-            if member.status in ['left', 'kicked']:
-                return False
-        except ApiTelegramException:
-            return False
-        except Exception:
-            return False
+            m = bot.get_chat_member(ch["username"], uid)
+            if m.status in ['left', 'kicked']: return False
+        except: return False
     return True
 
-# ==========================================
-# 4. Security, UID & Payload Validation
-# ==========================================
-def validate_strict_password(password, rule):
-    """Validates a password against a strict suffix rule."""
-    if not rule or str(rule).strip().lower() == "none":
-        return True
-    if not password:
-        return False
-    return str(password).strip().endswith(str(rule).strip())
+def validate_strict_password(p, r):
+    if not r or str(r).strip().lower() == "none": return True
+    return str(p).strip().endswith(str(r).strip()) if p else False
 
-# Pre-compile regex for maximum performance
-UID_PATTERN = re.compile(
-    r'(?:c_user=|id=|profile\.php\?id=|/u/)(\d{8,20})|(?<!\d)(\d{8,20})(?!\d)'
-)
-
-def extract_numeric_uid(text):
-    """Extracts the first valid numeric UID (8-20 digits) from text."""
-    if not text: return None
-    match = UID_PATTERN.search(str(text))
-    if match:
-        return match.group(1) or match.group(2)
-    return None
+UID_PATTERN = re.compile(r'(?:c_user=|id=|profile\.php\?id=|/u/)(\d{8,20})|(?<!\d)(\d{8,20})(?!\d)')
+def extract_numeric_uid(t):
+    if not t: return None
+    m = UID_PATTERN.search(str(t)); return m.group(1) or m.group(2) if m else None
 
 def is_duplicate_uid(uid):
-    """Checks if a UID already exists in the submissions collection."""
     if not uid: return True
-    try:
-        return submissions_col.find_one({"uid": str(uid)}, {"_id": 1}) is not None
-    except PyMongoError:
-        return True  # Fail safe
+    try: return submissions_col.find_one({"uid": str(uid)}, {"_id": 1}) is not None
+    except: return True
 
-def generate_payload_hash(payload):
-    """Generates a strict SHA-256 hash of the payload (strips all whitespace)."""
-    if not payload: return None
-    clean_payload = re.sub(r'\s+', '', str(payload))
-    return hashlib.sha256(clean_payload.encode('utf-8')).hexdigest()
+def generate_payload_hash(p):
+    if not p: return None
+    return hashlib.sha256(re.sub(r'\s+', '', str(p)).encode('utf-8')).hexdigest()
 
-def is_payload_blacklisted(p_hash):
-    """Checks if a payload hash exists in the blacklist collection."""
-    if not p_hash: return True
-    try:
-        return blacklisted_payloads_col.find_one({"_id": p_hash}) is not None
-    except PyMongoError:
-        return True
+def is_payload_blacklisted(h):
+    if not h: return True
+    try: return blacklisted_payloads_col.find_one({"_id": h}) is not None
+    except: return True
 
-def is_valid_cookies(cookie_str):
-    """Validates if the cookie string contains essential Facebook session tokens."""
-    if not cookie_str: return False
-    lower_cookies = str(cookie_str).lower()
-    return any(token in lower_cookies for token in ["c_user=", "datr=", "xs=", "sessionid="])
+def is_valid_cookies(c):
+    if not c: return False
+    lc = str(c).lower(); return any(t in lc for t in ["c_user=", "datr=", "xs=", "sessionid="])
+
+def generate_tracking_id(): return f"SUB-{int(get_bd_time().timestamp())}-{random.randint(100,999)}"
 
 # ==========================================
-# 5. AI Logger & External APIs
-# ==========================================
-def log_ai_report(issue_type, description, fix_action):
-    """Logs AI healing actions to the database and alerts the Admin asynchronously."""
-    def task():
-        try:
-            log_timestamp = get_bd_time()
-            ai_logs_col.insert_one({
-                "timestamp": log_timestamp,
-                "type": str(issue_type),
-                "description": str(description),
-                "action": str(fix_action)
-            })
-            alert_msg = (
-                f"🧠 <b>AI AUTO-HEALING REPORT</b>\n\n"
-                f"🔴 <b>Issue:</b> {sanitize_html(issue_type)}\n"
-                f"📝 <b>Desc:</b> {sanitize_html(description)}\n"
-                f"🛠 <b>Fix:</b> {sanitize_html(fix_action)}\n"
-                f"🕒 <b>Time:</b> {log_timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            if ADMIN_ID:
-                bot.send_message(ADMIN_ID, alert_msg, parse_mode="HTML")
-        except Exception as e:
-            print(f"[AI Logger] Error: {e}")
-    background_executor.submit(task)
-
-def fetch_temp_email_data(url):
-    """Production-ready helper for external Temp Email API GET requests."""
-    try:
-        response = requests.get(url, timeout=5.0)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        print(f"[TempEmailAPI] Error: {e}")
-        return None
-
-# ==========================================
-# 6. Escrow & Nightly Cleanup Daemon
-# ==========================================
-last_report_date = None
-last_wipe_date = None
-
-def escrow_and_cleanup_daemon():
-    """Background daemon for daily reporting and nightly database cleanup."""
-    global last_report_date, last_wipe_date
-    
-    while True:
-        try:
-            time.sleep(30)
-            now = get_bd_time()
-            today_str = now.strftime("%Y-%m-%d")
-            
-            # Condition 1: Daily Report at 23:55
-            if now.hour == 23 and now.minute == 55 and last_report_date != now.date():
-                last_report_date = now.date()
-                pipeline = [
-                    {"$match": {"date_key": today_str}},
-                    {"$group": {
-                        "_id": "$category",
-                        "count": {"$sum": 1},
-                        "total_rate": {"$sum": {"$ifNull": ["$rate", 0]}}
-                    }}
-                ]
-                results = list(submissions_col.aggregate(pipeline))
-                diary_msg = f"📊 <b>DAILY DIARY - {today_str}</b>\n\n"
-                total_tasks, total_earnings = 0, 0.0
-                
-                if not results:
-                    diary_msg += "No tasks submitted today."
-                else:
-                    for res in results:
-                        cat = res['_id'] or 'Uncategorized'
-                        cnt, rate = res['count'], res['total_rate']
-                        total_tasks += cnt
-                        total_earnings += rate
-                        diary_msg += f"▪️ <b>{cat}</b>: {cnt} tasks | 💰 {rate:.2f} BDT\n"
-                    diary_msg += f"\n📈 <b>Total Tasks</b>: {total_tasks}\n💵 <b>Total Payout</b>: {total_earnings:.2f} BDT"
-                
-                if ADMIN_ID:
-                    bot.send_message(ADMIN_ID, diary_msg, parse_mode="HTML")
-
-            # Condition 2: Nightly Wipe at 00:00
-            if now.hour == 0 and now.minute == 0 and last_wipe_date != now.date():
-                last_wipe_date = now.date()
-                yesterday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-                
-                # Delete ONLY Approved/Rejected tasks. Never touch "Hold" tasks.
-                delete_query = {
-                    "date_key": yesterday_str,
-                    "status": {"$in": ["Approved", "Rejected"]}
-                }
-                deleted_count = submissions_col.delete_many(delete_query).deleted_count
-                
-                cleanup_msg = (
-                    f"🧹 <b>NIGHTLY CLEANUP REPORT</b>\n\n"
-                    f"🗓 <b>Date Cleared</b>: {yesterday_str}\n"
-                    f"🗑 <b>Tasks Deleted</b>: {deleted_count}\n"
-                    f"✅ <b>Status</b>: 'Hold' tasks preserved."
-                )
-                if ADMIN_ID:
-                    bot.send_message(ADMIN_ID, cleanup_msg, parse_mode="HTML")
-                    
-        except Exception as e:
-            print(f"[Daemon Error] {e}")
-            time.sleep(60)
-
-# Start the daemon in a background thread
-threading.Thread(target=escrow_and_cleanup_daemon, daemon=True, name="NightlyCleanupDaemon").start()
-
-
-
-
-# ==============================================================================
-# OEB NEXUS - PART 3: Live Checker Engine, Dynamic Pricing & Shift Control
-# ==============================================================================
-# DEPENDENCY: Assumes Part 1 & 2 globals (bot, db, collections, executors, time utils, 
-# security functions, UAS) exist.
-
-# ==========================================
-# 1. Facebook Live Checker
+# 5. LIVE CHECKERS & PRICING
 # ==========================================
 def check_live_account(uid):
-    """
-    Checks if a Facebook UID is currently active, suspended, or cloud-blocked.
-    WARNING: This function contains time.sleep(). It MUST ONLY be executed 
-    inside the live_check_executor to prevent blocking the main bot thread.
-    """
-    clean_uid = extract_numeric_uid(uid)
-    if not clean_uid:
-        return False, "Invalid UID"
-
-    # Anti-spam delay to prevent triggering Cloudflare rate limits
-    time.sleep(random.uniform(0.5, 1.5))
-
+    c_uid = extract_numeric_uid(uid)
+    if not c_uid: return False, "Invalid"
+    time.sleep(random.uniform(0.5, 1.0))
     try:
-        headers = {
-            "User-Agent": random.choice(UAS),
-            "Accept-Language": "en-US,en;q=0.9",
-            "Sec-Fetch-Mode": "navigate"
-        }
-        
-        target_url = f"https://m.facebook.com/profile.php?id={clean_uid}"
-        
-        # Strict 5.0s timeout, allow redirects to catch login/checkpoint redirects
-        res = requests.get(target_url, headers=headers, timeout=5.0, allow_redirects=True)
-
-        content = res.text.lower()
-        res_url = (res.url or "").lower()
-
-        # --- Cloud IP Block Fix ---
-        if res.status_code == 403 or "login" in res_url or "checkpoint" in res_url:
-            if "c_user" not in res_url and clean_uid not in res_url:
-                return False, "Cloud Blocked"
-
-        # --- Status Code Check ---
-        if res.status_code != 200:
-            return False, "Suspended/Dead"
-
-        # --- Content Heuristics (Checkpoint/Dead) ---
-        if 'content="no-cache"' in content or "not found" in content:
-            return False, "Checkpoint"
-
-        # --- Content Heuristics (Live) ---
-        if "profile_ring" in content or "mbasic_inline_feed_composer" in content or clean_uid in res_url:
-            return True, "Live"
-
+        res = requests.get(f"https://m.facebook.com/profile.php?id={c_uid}", headers={"User-Agent": random.choice(UAS)}, timeout=5.0, allow_redirects=True)
+        url, txt = (res.url or "").lower(), res.text.lower()
+        if res.status_code == 403 or "login" in url or "checkpoint" in url:
+            if "c_user" not in url and c_uid not in url: return False, "Cloud Blocked"
+        if res.status_code != 200: return False, "Dead"
+        if 'content="no-cache"' in txt or "not found" in txt: return False, "Checkpoint"
+        if "profile_ring" in txt or "mbasic_inline_feed_composer" in txt or c_uid in url: return True, "Live"
         return False, "Suspended"
+    except: return False, "Network Error"
 
-    except Exception:
-        return False, "Network Error"
-
-# ==========================================
-# 2. Instagram Live Checker
-# ==========================================
-def check_ig_username_live(username):
-    """
-    Checks if an Instagram username is active. 
-    Includes a graceful fallback for IG's aggressive anti-scraping mechanisms.
-    WARNING: Contains time.sleep(). MUST be executed inside live_check_executor.
-    """
-    if not username:
-        return False, "Invalid Username"
-
-    clean_user = str(username).replace("@", "").strip()
-    if not clean_user:
-        return False, "Invalid Username"
-
-    time.sleep(random.uniform(0.5, 1.5))
-
-    try:
-        headers = {"User-Agent": random.choice(UAS)}
-        target_url = f"https://www.instagram.com/{clean_user}/"
-        res = requests.get(target_url, headers=headers, timeout=5.0)
-
-        res_url = (res.url or "").lower()
-
-        if res.status_code == 403 or "login" in res_url:
-            return False, "Cloud Blocked"
-
-        if res.status_code == 200 and "page not found" not in res.text.lower():
-            return True, "Live"
-
-        return False, "Dead"
-
-    except Exception:
-        # CRITICAL BUSINESS LOGIC: Instagram aggressively blocks scrapers.
-        # Assume live to prevent discarding valid accounts due to IP limits.
-        return True, "Assumed Live"
-
-# ==========================================
-# 3. Dynamic Surge Pricing Engine
-# ==========================================
 def get_active_surge_bonus():
-    """
-    Calculates the current active surge bonus based on configuration.
-    Safely handles timezone-aware datetime comparisons.
-    """
-    surge_config = get_setting("surge_pricing", {"active": False, "bonus": 0.0, "expires_at": None})
-    
-    if surge_config.get("active"):
-        expires_at_str = surge_config.get("expires_at")
-        
-        if expires_at_str:
-            expires_at = parse_iso_datetime(expires_at_str)
-            if expires_at and get_bd_time() < expires_at:
-                return float(surge_config.get("bonus", 0.0))
-            return 0.0
-            
-        # If active but no expiry is set, the bonus applies indefinitely
-        return float(surge_config.get("bonus", 0.0))
-        
+    sc = get_setting("surge_pricing", {"active": False, "bonus": 0.0, "expires_at": None})
+    if sc.get("active"):
+        exp = parse_iso(sc.get("expires_at"))
+        if exp and get_bd_time() < exp: return float(sc.get("bonus", 0.0))
+        if not exp: return float(sc.get("bonus", 0.0))
     return 0.0
 
-def get_current_task_rate(cat_key):
-    """
-    Calculates the final payout rate for a specific task category.
-    Combines the base rate from settings with any active surge bonus.
-    """
-    default_rates = {
-        "fb_cookie": 5.0, 
-        "fb_2fa": 6.0, 
-        "ig_cookie": 8.0, 
-        "ig_2fa": 10.0
-    }
-    
-    rates = get_setting("rates", default_rates)
-    base_rate = float(rates.get(cat_key, 5.0))
-    surge_bonus = get_active_surge_bonus()
-    
-    return base_rate + surge_bonus
+def get_current_task_rate(cat):
+    rates = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
+    return float(rates.get(cat, 5.0)) + get_active_surge_bonus()
 
-# ==========================================
-# 4. Shift Control & Submission Gatekeeper
-# ==========================================
 def get_shift_config():
-    """
-    Retrieves the shift configuration, dynamically injecting today's BD date 
-    into the default configuration to ensure daily shift resets.
-    """
-    default_config = {
-        "current_date": get_bd_time().strftime("%Y-%m-%d"),
-        "deadlines": {
-            "fb_cookie": "21:20",
-            "fb_2fa": "21:20",
-            "ig_cookie": "20:20",
-            "ig_2fa": "20:20",
-            "default": "23:59"
-        }
-    }
-    
-    return get_setting("shift_config", default_config)
+    return get_setting("shift_config", {"current_date": get_bd_time().strftime("%Y-%m-%d"), "deadlines": {"default": "23:59"}})
 
-def is_submission_allowed(cat_key, req_time):
-    """
-    Strictly validates if a task submission is allowed based on the current 
-    shift date and category-specific daily deadlines.
-    """
+def is_submission_allowed(cat, rt):
     try:
-        shift = get_shift_config()
-        
-        # Rule 1 (Date Check)
-        req_date_str = req_time.strftime("%Y-%m-%d")
-        if req_date_str != shift.get("current_date"):
-            return False, "⚠️ আজকের শিফট এখনো চালু হয়নি!"
-            
-        # Rule 2 (Time Check)
-        deadlines = shift.get("deadlines", {})
-        deadline_str = deadlines.get(cat_key, deadlines.get("default", "23:59"))
-        
-        hours, minutes = map(int, deadline_str.split(":"))
-        target_deadline = req_time.replace(hour=hours, minute=minutes, second=0, microsecond=0)
-        
-        if req_time > target_deadline:
-            return False, f"⚠️ ডেডলাইন {deadline_str} শেষ!"
-            
-        return True, "Allowed"
-        
-    except Exception:
-        # CRITICAL FALLBACK: Default to ALLOWED to prevent blocking legitimate 
-        # worker submissions due to a backend configuration glitch.
-        return True, "Allowed"
-
-
-# ==============================================================================
-# OEB NEXUS - PART 4: Smart Submission Hub (Single & Bulk Text Processing)
-# ==============================================================================
-# DEPENDENCY: Assumes Parts 1-3 globals exist. Handles state transitions for 
-# single/bulk submissions, concurrent live checking, and atomic DB updates.
+        s = get_shift_config()
+        if rt.strftime("%Y-%m-%d") != s.get("current_date"): return False, "⚠️ Shift not active!"
+        dl = s.get("deadlines", {}).get(cat, s.get("deadlines", {}).get("default", "23:59"))
+        h, m = map(int, dl.split(":"))
+        if rt > rt.replace(hour=h, minute=m, second=0, microsecond=0): return False, f"⚠️ Deadline {dl} passed!"
+        return True, "OK"
+    except: return True, "OK"
 
 # ==========================================
-# 1. Helper: Save Submission to DB & Update Balance
+# 6. SUBMISSION LOGIC
 # ==========================================
-def _save_submission(chat_id, uid, payload, category):
-    """
-    Atomically saves a task to MongoDB and increments the user's hold balance.
-    Returns the generated track_id and rate if successful, None/0.0 if duplicate.
-    """
-    track_id = generate_tracking_id()
-    date_key = get_bd_time().strftime("%Y-%m-%d")
-    rate = get_current_task_rate(category)
-    
-    doc = {
-        "_id": track_id,
-        "track_id": track_id,
-        "uid": str(uid),
-        "payload": payload,
-        "category": category,
-        "rate": rate,
-        "status": "Hold",
-        "date_key": date_key,
-        "submitted_at": get_bd_time(),
-        "user_id": chat_id
-    }
-    
+def _save_submission(cid, uid, pay, cat):
+    tid, dk, rate = generate_tracking_id(), get_bd_time().strftime("%Y-%m-%d"), get_current_task_rate(cat)
+    doc = {"_id": tid, "track_id": tid, "uid": str(uid), "payload": pay, "category": cat, "rate": rate, "status": "Hold", "date_key": dk, "submitted_at": get_bd_time(), "user_id": cid}
     try:
         submissions_col.insert_one(doc)
-        # Atomic increment of hold_balance
-        users_col.update_one({"_id": chat_id}, {"$inc": {"hold_balance": rate}})
-        return track_id, rate
-    except DuplicateKeyError:
-        return None, 0.0
-    except Exception as e:
-        print(f"[SaveSubmission] DB Error: {e}")
-        return None, 0.0
+        users_col.update_one({"_id": cid}, {"$inc": {"hold_balance": rate}})
+        return tid, rate
+    except DuplicateKeyError: return None, 0.0
 
-# ==========================================
-# 2. Single Submission Flow Handlers
-# ==========================================
-def handle_single_uid(chat_id, text):
-    """State: AWAITING_UID -> AWAITING_SINGLE_DATA"""
-    uid = extract_numeric_uid(text)
-    if not uid or is_duplicate_uid(uid):
-        return "❌ Invalid or Duplicate UID. Please try again."
-        
-    state_data = user_states.get(chat_id, {})
-    category = state_data.get("category", "fb_cookie")
-    
-    allowed, msg = is_submission_allowed(category, get_bd_time())
-    if not allowed:
-        return msg
-        
-    # Transition state
-    state_data["state"] = "AWAITING_SINGLE_DATA"
-    state_data["temp_uid"] = uid
-    user_states[chat_id] = state_data
-    
-    return f"✅ UID: <code>{uid}</code>\n\n📦 Now send the payload (Cookie/2FA data):"
+def handle_single_uid(cid, txt):
+    uid = extract_numeric_uid(txt)
+    if not uid or is_duplicate_uid(uid): return "❌ Invalid/Duplicate UID."
+    sd = user_states.get(cid, {}); cat = sd.get("category", "fb_cookie")
+    ok, msg = is_submission_allowed(cat, get_bd_time())
+    if not ok: return msg
+    sd["state"], sd["temp_uid"] = "AWAITING_SINGLE_DATA", uid; user_states[cid] = sd
+    return get_text("send_payload", cid)
 
-def handle_single_data(chat_id, payload):
-    """State: AWAITING_SINGLE_DATA -> AWAITING_MANUAL_PASSWORD or AWAITING_UID"""
-    state_data = user_states.get(chat_id, {})
-    uid = state_data.get("temp_uid")
-    category = state_data.get("category", "fb_cookie")
-    
-    if not uid:
-        return "❌ Session expired. Please start over with /start."
-        
-    global_rule = get_setting("pass_rule", "")
-    user_data = get_user_data(chat_id)
-    custom_pass = user_data.get("custom_password", "")
-    
-    # Check if existing custom password satisfies the current global rule
-    if validate_strict_password(custom_pass, global_rule):
-        # Instant save
-        track_id, rate = _save_submission(chat_id, uid, payload, category)
-        if track_id:
-            # Revert to AWAITING_UID for continuous fast submission
-            state_data["state"] = "AWAITING_UID"
-            # Clean up temp data to save RAM
-            state_data.pop("temp_uid", None)
-            user_states[chat_id] = state_data
-            return f"✅ <b>Task Saved!</b>\n🎫 Track ID: <code>{track_id}</code>\n💰 Rate: {rate} BDT\n\n🔄 Send next UID:"
-        return "❌ Duplicate submission detected."
-    else:
-        # Need manual password
-        state_data["state"] = "AWAITING_MANUAL_PASSWORD"
-        state_data["temp_payload"] = payload
-        user_states[chat_id] = state_data
-        return "🔐 Please enter your password to confirm this submission:"
+def handle_single_data(cid, pay):
+    sd = user_states.get(cid, {}); uid, cat = sd.get("temp_uid"), sd.get("category", "fb_cookie")
+    if not uid: return "❌ Session expired."
+    gr, cp = get_setting("pass_rule", ""), get_user_data(cid).get("custom_password", "")
+    if validate_strict_password(cp, gr):
+        tid, r = _save_submission(cid, uid, pay, cat)
+        if tid: 
+            sd["state"] = "AWAITING_UID"; sd.pop("temp_uid", None); user_states[cid] = sd
+            return get_text("task_saved", cid).format(tid=tid, rate=r)
+        return "❌ Duplicate."
+    sd["state"], sd["temp_payload"] = "AWAITING_MANUAL_PASSWORD", pay; user_states[cid] = sd
+    return get_text("send_pass", cid)
 
-def handle_manual_password(chat_id, password):
-    """State: AWAITING_MANUAL_PASSWORD -> AWAITING_UID"""
-    state_data = user_states.get(chat_id, {})
-    uid = state_data.get("temp_uid")
-    payload = state_data.get("temp_payload")
-    category = state_data.get("category", "fb_cookie")
-    
-    if not uid or not payload:
-        return "❌ Session expired. Please start over with /start."
-        
-    global_rule = get_setting("pass_rule", "")
-    
-    if validate_strict_password(password, global_rule):
-        track_id, rate = _save_submission(chat_id, uid, payload, category)
-        if track_id:
-            # Save this password as the user's custom password for future instant saves
-            update_user_field(chat_id, "custom_password", password)
-            
-            # Revert state
-            state_data["state"] = "AWAITING_UID"
-            # Clean up temp data to save RAM
-            state_data.pop("temp_uid", None)
-            state_data.pop("temp_payload", None)
-            user_states[chat_id] = state_data
-            
-            return f"✅ <b>Task Saved!</b>\n🎫 Track ID: <code>{track_id}</code>\n💰 Rate: {rate} BDT\n🔓 Password saved for instant future submissions.\n\n🔄 Send next UID:"
-        return "❌ Duplicate submission detected."
-    else:
-        return "❌ Incorrect password. Please try again or contact admin."
+def handle_manual_password(cid, pw):
+    sd = user_states.get(cid, {}); uid, pay, cat = sd.get("temp_uid"), sd.get("temp_payload"), sd.get("category", "fb_cookie")
+    if not uid or not pay: return "❌ Expired."
+    if validate_strict_password(pw, get_setting("pass_rule", "")):
+        tid, r = _save_submission(cid, uid, pay, cat)
+        if tid:
+            update_user_field(cid, "custom_password", pw)
+            sd["state"] = "AWAITING_UID"; sd.pop("temp_uid", None); sd.pop("temp_payload", None); user_states[cid] = sd
+            return get_text("task_saved", cid).format(tid=tid, rate=r) + "\n🔓 <i>Password saved for instant future submissions.</i>"
+        return "❌ Duplicate."
+    return "❌ Wrong password."
 
-# ==========================================
-# 3. Bulk Text Submission Flow
-# ==========================================
-def handle_bulk_text(chat_id, text):
-    """State: AWAITING_BULK_TEXT -> Async Processing"""
-    # 1. Strict Password Validation BEFORE processing
-    global_rule = get_setting("pass_rule", "")
-    user_data = get_user_data(chat_id)
-    custom_pass = user_data.get("custom_password", "")
-    
-    if not validate_strict_password(custom_pass, global_rule):
-        return "❌ Invalid Password. Bulk submission rejected. Set your password first."
-        
-    # 2. Send immediate feedback
-    bot.send_message(chat_id, "⏳ <b>Processing bulk text...</b>\nThis may take a few moments.", parse_mode="HTML")
-    
-    # 3. Define the heavy background task
+def handle_bulk_text(cid, txt):
+    cp, gr = get_user_data(cid).get("custom_password", ""), get_setting("pass_rule", "")
+    if not validate_strict_password(cp, gr): return "❌ Invalid Password."
+    bot.send_message(cid, get_text("bulk_processing", cid), parse_mode="HTML")
     def rbk():
-        accepted_ids = []
-        total_payout = 0.0
-        cloud_blocked_count = 0
-        
         try:
-            lines = text.strip().split('\n')
-            pending_list = []
-            
-            # Filter and prepare pending tasks
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                    
-                uid = extract_numeric_uid(line)
-                if not uid or is_duplicate_uid(uid):
-                    continue
-                    
-                p_hash = generate_payload_hash(line)
-                if is_payload_blacklisted(p_hash):
-                    continue
-                    
-                # Determine category based on payload content
-                category = "fb_cookie" if is_valid_cookies(line) else "fb_2fa"
-                
-                allowed, _ = is_submission_allowed(category, get_bd_time())
-                if not allowed:
-                    continue
-                    
-                pending_list.append({
-                    "uid": uid,
-                    "payload": line,
-                    "category": category
-                })
-                
-            if not pending_list:
-                bot.send_message(chat_id, "❌ No valid, unique, and allowed tasks found in the text.")
-                return
-
-            # Concurrent Live Checking Wrapper
-            def _chk(item):
-                is_live, msg = check_live_account(item["uid"])
-                item["is_live"] = is_live
-                item["status_msg"] = msg
-                return item
-
-            # Map through the bounded live_check_executor
-            checked_results = live_check_executor.map(_chk, pending_list)
-            
-            # Process results and save to DB
-            for item in checked_results:
-                if item["is_live"]:
-                    track_id, rate = _save_submission(chat_id, item["uid"], item["payload"], item["category"])
-                    if track_id:
-                        accepted_ids.append(item["uid"])
-                        total_payout += rate
-                elif item["status_msg"] == "Cloud Blocked":
-                    cloud_blocked_count += 1
-
-            # 4. Send Final Summary
-            summary = f"✅ <b>Bulk Processing Complete!</b>\n\n"
-            summary += f"📥 <b>Accepted IDs:</b> {len(accepted_ids)}\n"
-            summary += f"💰 <b>Total Payout:</b> {total_payout:.2f} BDT\n"
-            
-            if cloud_blocked_count > 0:
-                summary += f"\n⚠️ <b>Warning:</b> {cloud_blocked_count} tasks were skipped due to Cloud IP Blocks. Please try again later."
-                
-            if accepted_ids:
-                summary += f"\n📝 <b>First 5 IDs:</b>\n<code>{'\n'.join(accepted_ids[:5])}</code>"
-                
-            bot.send_message(chat_id, summary, parse_mode="HTML")
-            
-        except Exception as e:
-            print(f"[BulkProcessor] Critical error: {e}")
-            bot.send_message(chat_id, "❌ An internal error occurred during bulk processing.")
-        finally:
-            # CRITICAL: Force garbage collection to prevent RAM overflow on free-tier servers
-            gc.collect()
-
-    # Submit to the heavy task executor to keep the main thread unblocked
-    heavy_task_executor.submit(rbk)
-    
-    return None  # Return None because the initial "Processing" message was already sent
-
-
-# ==============================================================================
-# OEB NEXUS - PART 5: Master File Processor (Excel/CSV Deep Extract)
-# ==============================================================================
-# DEPENDENCY: Assumes Parts 1-4 globals exist. Handles heavy file parsing, 
-# concurrent live checking, atomic DB updates, and strict memory cleanup.
+            lines, pending = txt.strip().split('\n'), []
+            for l in lines:
+                l = l.strip()
+                if not l: continue
+                uid = extract_numeric_uid(l)
+                if not uid or is_duplicate_uid(uid) or is_payload_blacklisted(generate_payload_hash(l)): continue
+                cat = "fb_cookie" if is_valid_cookies(l) else "fb_2fa"
+                if is_submission_allowed(cat, get_bd_time())[0]: pending.append({"uid": uid, "pay": l, "cat": cat})
+            if not pending: bot.send_message(cid, "❌ No valid tasks."); return
+            def chk(i): i["live"], _ = check_live_account(i["uid"]); return i
+            res = live_check_executor.map(chk, pending)
+            acc, tot = 0, 0.0
+            for i in res:
+                if i["live"]:
+                    tid, r = _save_submission(cid, i["uid"], i["pay"], i["cat"])
+                    if tid: acc += 1; tot += r
+            bot.send_message(cid, get_text("bulk_done", cid).format(count=acc, payout=f"{tot:.2f}"), parse_mode="HTML")
+        except Exception as e: print(e); bot.send_message(cid, "❌ Error.")
+        finally: gc.collect()
+    heavy_task_executor.submit(rbk); return None
 
 # ==========================================
-# 1. Private Cloud Backup Function
+# 7. FILE & AUTO-MATCHER PROCESSORS
 # ==========================================
 def send_private_backup_message(content, doc_buf=None, doc_name=None):
-    """
-    Sends a backup message and optional document to the private backup channel.
-    Runs asynchronously to prevent blocking the main bot thread.
-    """
     def task():
         try:
-            # Truncate content to 3750 chars to strictly prevent Telegram API limits
             safe_content = str(content)[:3750]
-            
             if doc_buf and doc_name:
                 doc_buf.seek(0)
-                bot.send_document(
-                    BACKUP_CHANNEL_ID, 
-                    doc_buf, 
-                    caption=safe_content, 
-                    parse_mode="HTML"
-                )
+                bot.send_document(BACKUP_CHANNEL_ID, doc_buf, caption=safe_content, parse_mode="HTML")
             else:
-                bot.send_message(
-                    BACKUP_CHANNEL_ID, 
-                    safe_content, 
-                    parse_mode="HTML"
-                )
-        except Exception as e:
-            print(f"[Backup] Failed to send backup: {e}")
-            
+                bot.send_message(BACKUP_CHANNEL_ID, safe_content, parse_mode="HTML")
+        except Exception as e: print(f"[Backup] Error: {e}")
     background_executor.submit(task)
 
-# ==========================================
-# 2. Document Handler & Router
-# ==========================================
-@bot.message_handler(content_types=['document'])
-def handle_document(message):
-    # Wrap execution in heavy_task_executor to protect main polling threads
-    heavy_task_executor.submit(_process_document, message)
-
 def _process_document(message):
-    chat_id = message.chat.id
+    cid = message.chat.id
+    if get_setting("maintenance_mode", False): bot.send_message(cid, "🛠 Maintenance."); return
+    if is_user_banned(cid): bot.send_message(cid, "🚫 Banned."); return
     
-    # Basic security and state checks
-    if get_setting("maintenance_mode", False):
-        bot.send_message(chat_id, "🛠 Bot is under maintenance. Please try again later.")
-        return
-        
-    if is_user_banned(chat_id):
-        bot.send_message(chat_id, "🚫 You are banned from using this bot.")
-        return
-        
-    state_data = user_states.get(chat_id, {})
-    if state_data.get("state") != "AWAITING_EXCEL_FILE":
-        bot.send_message(chat_id, "❌ Please use the menu to start an Excel/CSV submission first.")
-        return
-
-    # ==========================================
-    # 3. Excel/CSV Deep Extraction
-    # ==========================================
-    # Strict password validation before downloading/processing
     global_rule = get_setting("pass_rule", "")
-    user_data = get_user_data(chat_id)
-    custom_pass = user_data.get("custom_password", "")
-    
+    custom_pass = get_user_data(cid).get("custom_password", "")
     if not validate_strict_password(custom_pass, global_rule):
-        bot.send_message(chat_id, "❌ Invalid Password. Set your password first to process files.")
-        return
+        bot.send_message(cid, "❌ Invalid Password."); return
         
-    bot.send_message(chat_id, "⏳ <b>Processing file...</b>\nThis may take a few moments.", parse_mode="HTML")
-    
+    bot.send_message(cid, get_text("file_processing", cid), parse_mode="HTML")
     original_filename = message.document.file_name or "backup_file"
     file_ext = original_filename.lower().split('.')[-1]
     
     try:
-        # Download file directly into RAM
-        file_info = bot.get_file(message.document.file_id)
-        dw = bot.download_file(file_info.file_path)
-        
+        dw = bot.download_file(bot.get_file(message.document.file_id).file_path)
         cands = []
-        
         if file_ext == "csv":
-            # Decode and parse CSV
-            text = dw.decode('utf-8', errors='ignore')
-            reader = csv.reader(text.splitlines())
-            for row in reader:
-                uid = None
-                payload = None
-                for val in row:
-                    val_str = str(val).strip()
-                    if not val_str:
-                        continue
-                    if not uid:
-                        u = extract_numeric_uid(val_str)
-                        if u:
-                            uid = u
-                    if not payload:
-                        # Ensure it's a valid cookie string OR a long non-numeric string
-                        if is_valid_cookies(val_str) or (len(val_str) > 20 and not val_str.isdigit()):
-                            payload = val_str
-                if uid and payload and not is_duplicate_uid(uid):
-                    cands.append({"uid": uid, "payload": payload})
-                    
+            for row in csv.reader(dw.decode('utf-8', errors='ignore').splitlines()):
+                u, p = None, None
+                for v in row:
+                    v = str(v).strip()
+                    if not v: continue
+                    if not u: u = extract_numeric_uid(v)
+                    if not p and (is_valid_cookies(v) or (len(v)>20 and not v.isdigit())): p = v
+                if u and p and not is_duplicate_uid(u): cands.append({"uid": u, "payload": p})
         elif file_ext in ["xlsx", "xls"]:
-            # read_only=True and data_only=True are critical for strict memory efficiency
             wb = openpyxl.load_workbook(io.BytesIO(dw), read_only=True, data_only=True)
-            ws = wb.active
-            for row in ws.iter_rows(values_only=True):
-                uid = None
-                payload = None
-                for val in row:
-                    if val is None:
-                        continue
-                    val_str = str(val).strip()
-                    if not val_str:
-                        continue
-                    if not uid:
-                        u = extract_numeric_uid(val_str)
-                        if u:
-                            uid = u
-                    if not payload:
-                        if is_valid_cookies(val_str) or (len(val_str) > 20 and not val_str.isdigit()):
-                            payload = val_str
-                if uid and payload and not is_duplicate_uid(uid):
-                    cands.append({"uid": uid, "payload": payload})
-            wb.close() # Explicitly close workbook to free memory
-        else:
-            bot.send_message(chat_id, "❌ Unsupported file format. Please send .csv or .xlsx files only.")
-            return
-
-        if not cands:
-            bot.send_message(chat_id, "❌ No valid, unique tasks found in the file.")
-            return
-
-        # ==========================================
-        # 4. Concurrent Validation & MongoDB Insertion
-        # ==========================================
-        valid_cands = []
+            for row in wb.active.iter_rows(values_only=True):
+                u, p = None, None
+                for v in row:
+                    if v is None: continue
+                    v = str(v).strip()
+                    if not u: u = extract_numeric_uid(v)
+                    if not p and (is_valid_cookies(v) or (len(v)>20 and not v.isdigit())): p = v
+                if u and p and not is_duplicate_uid(u): cands.append({"uid": u, "payload": p})
+            wb.close()
+        else: bot.send_message(cid, "❌ Unsupported format."); return
         
-        # Pre-filter candidates
+        valid = []
         for c in cands:
-            p_hash = generate_payload_hash(c["payload"])
-            if is_payload_blacklisted(p_hash):
-                continue
-                
-            category = "fb_cookie" if is_valid_cookies(c["payload"]) else "fb_2fa"
-            allowed, _ = is_submission_allowed(category, get_bd_time())
-            if not allowed:
-                continue
-                
-            c["category"] = category
-            valid_cands.append(c)
+            if is_payload_blacklisted(generate_payload_hash(c["payload"])): continue
+            cat = "fb_cookie" if is_valid_cookies(c["payload"]) else "fb_2fa"
+            if is_submission_allowed(cat, get_bd_time())[0]: valid.append({**c, "cat": cat})
             
-        if not valid_cands:
-            bot.send_message(chat_id, "❌ All extracted tasks were blacklisted or past the daily deadline.")
-            return
-
-        # Concurrent Live Checking wrapper
-        def _chk(item):
-            is_live, msg = check_live_account(item["uid"])
-            item["is_live"] = is_live
-            item["status_msg"] = msg
-            return item
-
-        # Map through the bounded live_check_executor
-        checked_results = live_check_executor.map(_chk, valid_cands)
-        
-        accepted_count = 0
-        total_payout = 0.0
-        
-        # Process and save live accounts
-        # Note: _save_submission (from Part 4) handles the atomic $inc for hold_balance
-        for item in checked_results:
-            if item["is_live"]:
-                track_id, rate = _save_submission(chat_id, item["uid"], item["payload"], item["category"])
-                if track_id:
-                    accepted_count += 1
-                    total_payout += rate
-
-        # ==========================================
-        # 5. Balances, Cloud Backup & Cleanup
-        # ==========================================
-        # Prepare backup file buffer (create a fresh BytesIO to avoid stream consumption issues)
+        def chk(i): i["live"], _ = check_live_account(i["uid"]); return i
+        res = live_check_executor.map(chk, valid)
+        acc, tot = 0, 0.0
+        for i in res:
+            if i["live"]:
+                tid, r = _save_submission(cid, i["uid"], i["payload"], i["cat"])
+                if tid: acc += 1; tot += r
+                
         doc_buf = io.BytesIO(dw)
         backup_filename = f"Backup_{get_bd_time().strftime('%Y-%m-%d')}_{original_filename}"
+        caption = f"📂 <b>FILE BACKUP</b>\n\n👤 <b>ID:</b> <code>{cid}</code>\n✅ <b>Count:</b> {acc}\n💰 <b>Payout:</b> {tot:.2f} BDT"
+        send_private_backup_message(caption, doc_buf=doc_buf, doc_name=backup_filename)
         
-        backup_caption = (
-            f"📂 <b>FILE BACKUP</b>\n\n"
-            f"👤 <b>Worker ID:</b> <code>{chat_id}</code>\n"
-            f"🔑 <b>Password:</b> <code>{sanitize_html(custom_pass)}</code>\n"
-            f"✅ <b>Valid Count:</b> {accepted_count}\n"
-            f"💰 <b>Total Payout:</b> {total_payout:.2f} BDT\n"
-            f"📄 <b>File:</b> {sanitize_html(original_filename)}"
-        )
-        
-        send_private_backup_message(backup_caption, doc_buf=doc_buf, doc_name=backup_filename)
-        
-        # Send final summary to the worker
-        summary = (
-            f"✅ <b>File Processing Complete!</b>\n\n"
-            f"📥 <b>Accepted Tasks:</b> {accepted_count}\n"
-            f"💰 <b>Total Payout:</b> {total_payout:.2f} BDT\n\n"
-            f"🔄 You can send another file or use /start to go to the main menu."
-        )
-        bot.send_message(chat_id, summary, parse_mode="HTML")
-        
-        # Revert state to allow continuous workflow
-        state_data["state"] = "AWAITING_UID"
-        user_states[chat_id] = state_data
+        bot.send_message(cid, get_text("file_done", cid).format(count=acc, payout=f"{tot:.2f}"), parse_mode="HTML")
+        sd = user_states.get(cid, {}); sd["state"] = "AWAITING_UID"; user_states[cid] = sd
+    except Exception as e: print(e); bot.send_message(cid, "❌ File Error.")
+    finally: gc.collect()
 
-    except Exception as e:
-        print(f"[FileProcessor] Critical error: {e}")
-        bot.send_message(chat_id, "❌ An internal error occurred while processing the file.")
-    finally:
-        # CRITICAL: Force garbage collection to prevent RAM overflow on 512MB servers
-        gc.collect()
-
-
-# ==============================================================================
-# OEB NEXUS - PART 6: Auto-Matcher & Cloud Backup (Buyer Report Processing)
-# ==============================================================================
-# DEPENDENCY: Assumes Parts 1-5 globals exist. 
-# NOTE: This part defines the processing function. The actual routing from the 
-# document handler will be wired in Part 10 to avoid duplicate @bot.message_handler 
-# decorators for 'document' content types.
-
-# ==========================================
-# 1. Auto-Matcher Processing Function
-# ==========================================
 def process_buyer_report(message):
-    """
-    Processes the buyer's report (Excel/CSV) uploaded by the Admin.
-    Matches pending tasks, updates dual wallets atomically, and notifies workers.
-    WARNING: This is a heavy task. MUST be executed via heavy_task_executor.
-    """
-    chat_id = message.chat.id
-    
-    # Strict Admin check
-    if chat_id != ADMIN_ID:
-        return
-        
-    state_data = user_states.get(chat_id, {})
-    if state_data.get("state") != "AWAITING_BUYER_REPORT":
-        return
-        
-    # Extract targets and clear state immediately to prevent re-triggering
-    target_date = state_data.get("target_date", "ALL")
-    target_cat = state_data.get("target_cat", "ALL")
-    
-    state_data["state"] = "AWAITING_UID"
-    user_states[chat_id] = state_data
-    
-    bot.send_message(chat_id, "⏳ <b>Matching in progress...</b>\nPlease wait.", parse_mode="HTML")
-    
+    cid = message.chat.id
+    if cid != ADMIN_ID: return
+    sd = user_states.get(cid, {}); sd["state"] = "AWAITING_UID"; user_states[cid] = sd
+    bot.send_message(cid, "⏳ <b>Matching...</b>", parse_mode="HTML")
     try:
-        # ==========================================
-        # 2. File Processing & UID Extraction
-        # ==========================================
-        file_info = bot.get_file(message.document.file_id)
-        dw = bot.download_file(file_info.file_path)
-        buf = io.BytesIO(dw)
-        
+        dw = bot.download_file(bot.get_file(message.document.file_id).file_path)
         ex_uids = set()
-        filename = message.document.file_name.lower() if message.document.file_name else ""
-        
-        if filename.endswith('.csv'):
-            text = dw.decode('utf-8', errors='ignore')
-            reader = csv.reader(text.splitlines())
-            for row in reader:
-                for val in row:
-                    # Clean UIDs: remove decimals if parsed as floats by Excel
-                    val_str = str(val).strip().replace('.0', '')
-                    if val_str.isdigit() and 8 <= len(val_str) <= 20:
-                        ex_uids.add(val_str)
-                        
-        elif filename.endswith('.xlsx') or filename.endswith('.xls'):
-            # read_only=True is critical for memory efficiency on large reports
-            wb = openpyxl.load_workbook(buf, read_only=True, data_only=True)
-            ws = wb.active
-            for row in ws.iter_rows(values_only=True):
-                for val in row:
-                    if val is None: 
-                        continue
-                    val_str = str(val).strip().replace('.0', '')
-                    if val_str.isdigit() and 8 <= len(val_str) <= 20:
-                        ex_uids.add(val_str)
-            wb.close() # Explicitly close to free memory
+        if message.document.file_name.lower().endswith('.csv'):
+            for row in csv.reader(dw.decode('utf-8', errors='ignore').splitlines()):
+                for v in row:
+                    v = str(v).strip().replace('.0', '')
+                    if v.isdigit() and 8 <= len(v) <= 20: ex_uids.add(v)
         else:
-            bot.send_message(chat_id, "❌ Unsupported file format. Please send .csv or .xlsx.")
-            return
-
-        if not ex_uids:
-            bot.send_message(chat_id, "❌ No valid UIDs found in the buyer report.")
-            return
-
-        # ==========================================
-        # 3. MongoDB Query & Matching
-        # ==========================================
-        q = {"status": "Hold"}
-        if target_date != "ALL":
-            q["date_key"] = target_date
-        if target_cat != "ALL":
-            q["category"] = target_cat
-            
-        subs = list(submissions_col.find(q))
-        if not subs:
-            bot.send_message(chat_id, "❌ No pending 'Hold' tasks found for the given criteria.")
-            return
-            
-        appr = 0
-        rej = 0
-        payout = 0.0
-        notifs = collections.defaultdict(list)
+            wb = openpyxl.load_workbook(io.BytesIO(dw), read_only=True, data_only=True)
+            for row in wb.active.iter_rows(values_only=True):
+                for v in row:
+                    if v is None: continue
+                    v = str(v).strip().replace('.0', '')
+                    if v.isdigit() and 8 <= len(v) <= 20: ex_uids.add(v)
+            wb.close()
         
-        # ==========================================
-        # 4. Dual Wallet Payout Logic (Atomic Updates)
-        # ==========================================
+        subs = list(submissions_col.find({"status": "Hold"}))
+        appr, rej, pay = 0, 0, 0.0
         for s in subs:
-            uid = str(s.get("uid", ""))
-            amt = float(s.get("rate", 0.0))
-            wid = s.get("user_id")
-            track_id = s.get("track_id")
-            
-            if not wid or not track_id:
-                continue
-                
+            uid, amt, wid, tid = str(s.get("uid")), float(s.get("rate", 0)), s.get("user_id"), s.get("track_id")
+            if not wid: continue
             if uid in ex_uids:
-                # --- APPROVED ---
-                submissions_col.update_one({"_id": track_id}, {"$set": {"status": "Approved"}})
-                
-                # Fetch role to determine wallet destination
-                user = users_col.find_one({"_id": wid}, {"role": 1})
-                role = user.get("role", "member") if user else "member"
-                
-                # ATOMIC UPDATE: Use $gte to strictly prevent negative balances
-                if role == "sub_admin":
-                    users_col.update_one(
-                        {"_id": wid, "hold_balance": {"$gte": amt}}, 
-                        {"$inc": {"virtual_wallet": amt, "hold_balance": -amt}}
-                    )
-                else:
-                    users_col.update_one(
-                        {"_id": wid, "hold_balance": {"$gte": amt}}, 
-                        {"$inc": {"balance": amt, "hold_balance": -amt}}
-                    )
-                    
-                appr += 1
-                payout += amt
-                notifs[wid].append(f"✅ <b>Approved:</b> <code>{uid}</code> | 💰 +{amt} BDT")
-                
+                submissions_col.update_one({"_id": tid}, {"$set": {"status": "Approved"}})
+                role = get_user_data(wid).get("role", "member")
+                wkey = "virtual_wallet" if role == "sub_admin" else "balance"
+                users_col.update_one({"_id": wid, "hold_balance": {"$gte": amt}}, {"$inc": {wkey: amt, "hold_balance": -amt}})
+                appr += 1; pay += amt
             else:
-                # --- REJECTED ---
-                submissions_col.update_one({"_id": track_id}, {"$set": {"status": "Rejected"}})
-                
-                # ATOMIC UPDATE: Deduct hold balance without adding to main wallet
-                users_col.update_one(
-                    {"_id": wid, "hold_balance": {"$gte": amt}}, 
-                    {"$inc": {"hold_balance": -amt}}
-                )
-                
+                submissions_col.update_one({"_id": tid}, {"$set": {"status": "Rejected"}})
+                users_col.update_one({"_id": wid, "hold_balance": {"$gte": amt}}, {"$inc": {"hold_balance": -amt}})
                 rej += 1
-                notifs[wid].append(f"❌ <b>Rejected:</b> <code>{uid}</code>")
-
-        # ==========================================
-        # 5. Anti-Spam Batch Notifications & Cleanup
-        # ==========================================
-        for wid, msgs in notifs.items():
-            # Limit to 15 lines to prevent oversized messages and API errors
-            if len(msgs) > 15:
-                text = "\n".join(msgs[:15]) + f"\n<i>...and {len(msgs) - 15} more.</i>"
-            else:
-                text = "\n".join(msgs)
-                
-            try:
-                bot.send_message(wid, text, parse_mode="HTML")
-                # STRICT ANTI-SPAM DELAY to prevent 429 Too Many Requests
-                time.sleep(0.04) 
-            except Exception as e:
-                print(f"[Notifier] Failed to send to {wid}: {e}")
-                
-        # Final summary to Admin
-        summary = (
-            f"✅ <b>Auto-Matcher Complete!</b>\n\n"
-            f"📊 <b>Total Approved:</b> {appr}\n"
-            f"💰 <b>Total Payout:</b> {payout:.2f} BDT\n"
-            f"❌ <b>Total Rejected:</b> {rej}\n"
-            f"👥 <b>Workers Notified:</b> {len(notifs)}"
-        )
-        bot.send_message(ADMIN_ID, summary, parse_mode="HTML")
-        
-    except Exception as e:
-        print(f"[AutoMatcher] Critical error: {e}")
-        bot.send_message(chat_id, "❌ An internal error occurred during matching.")
-    finally:
-        # CRITICAL: Force garbage collection to release heavy Excel/CSV processing memory
-        gc.collect()
-
-
-# ==============================================================================
-# OEB NEXUS - PART 7: Dynamic UI, Main Router, Callbacks & Final Execution
-# ==============================================================================
-# DEPENDENCY: Assumes Parts 1-6 globals exist. 
-# This part wires the entire user interface, routes text/callbacks, and starts the bot.
+        bot.send_message(ADMIN_ID, f"✅ <b>Matcher Done!</b>\n\n━━━━━━━━━━━━━━━━━━\n📊 <b>Approved:</b> {appr}\n💰 <b>Payout:</b> {pay:.2f}\n❌ <b>Rejected:</b> {rej}", parse_mode="HTML")
+    except Exception as e: print(e)
+    finally: gc.collect()
 
 # ==========================================
-# 1. Dynamic Keyboard Generators
+# 8. UI & KEYBOARDS (MULTI-LANG)
 # ==========================================
-def main_bottom_keyboard(chat_id):
+def main_bottom_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("Submit Tasks", "Helper Tools", "Profile & Wallet", "Reward & Support")
-    user = get_user_data(chat_id)
-    if chat_id == ADMIN_ID or user.get("role") in ["admin", "sub_admin"]:
-        kb.add("Admin Control Center")
+    kb.add(get_text("btn_submit", cid), get_text("btn_tools", cid), get_text("btn_wallet", cid), get_text("btn_reward", cid))
+    if cid == ADMIN_ID or get_user_data(cid).get("role") in ["admin", "sub_admin"]: kb.add(get_text("btn_admin", cid))
     return kb
 
-def submit_tasks_keyboard():
+def cancel_keyboard(): return types.ReplyKeyboardMarkup(resize_keyboard=True).add("❌ Cancel")
+
+def submit_tasks_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("Single Submission", "Bulk Text", "Excel/CSV File", "Back")
+    kb.add(get_text("btn_single", cid), get_text("btn_bulk", cid), get_text("btn_excel", cid), get_text("btn_back", cid))
     return kb
 
-def helper_tools_keyboard():
+def helper_tools_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("Temp Email", "2FA Generator", "Leaderboard", "Back")
+    kb.add(get_text("btn_temp_email", cid), get_text("btn_2fa", cid), get_text("btn_leaderboard", cid), get_text("btn_back", cid))
     return kb
 
-def account_keyboard():
+def account_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("My Balance", "Withdraw", "Transaction History", "Back")
+    kb.add(get_text("btn_balance", cid), get_text("btn_withdraw", cid), get_text("btn_tx_history", cid), get_text("btn_back", cid))
     return kb
 
-def bonus_support_keyboard():
+def bonus_support_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("Daily Bonus", "Contact Support", "Back")
+    kb.add(get_text("btn_bonus", cid), get_text("btn_support", cid), get_text("btn_back", cid))
     return kb
 
-def cancel_keyboard():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("❌ Cancel")
-    return kb
-
-def category_bottom_keyboard():
+def category_bottom_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     rates = get_setting("rates", {"fb_cookie": 5.0, "fb_2fa": 6.0, "ig_cookie": 8.0, "ig_2fa": 10.0})
     surge = get_active_surge_bonus()
-    for cat, base in rates.items():
-        total = base + surge
-        kb.add(f"{cat} ({total} BDT)")
-    kb.add("Back")
+    for c, b in rates.items(): kb.add(f"{c} ({b+surge} BDT)")
+    kb.add(get_text("btn_back", cid)); return kb
+
+def admin_bottom_keyboard(cid):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    kb.add(get_text("btn_task_mgmt", cid), get_text("btn_finance", cid), get_text("btn_settings", cid), get_text("btn_system", cid), get_text("btn_back", cid))
     return kb
 
-def admin_bottom_keyboard():
+def admin_sub_task_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("Task Management", "Finance & Wallets", "Settings", "System Tools", "Main Menu")
+    kb.add(get_text("btn_buyer_report", cid), get_text("btn_force_close", cid), get_text("btn_export", cid), get_text("btn_back", cid))
     return kb
 
-def admin_sub_task_keyboard():
+def admin_sub_finance_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("Buyer Report", "Force Close Shift", "Export Data", "Back")
+    kb.add("Pending Withdrawals", "Adjust Balance", get_text("btn_back", cid))
     return kb
 
-def admin_sub_finance_keyboard():
+def admin_sub_settings_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("Pending Withdrawals", "Adjust Balance", "Back")
+    kb.add("Password Rule", "Base Rates", "Surge Pricing", get_text("btn_back", cid))
     return kb
 
-def admin_sub_settings_keyboard():
+def admin_sub_system_keyboard(cid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("Password Rule", "Base Rates", "Surge Pricing", "Back")
-    return kb
-
-def admin_sub_system_keyboard():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("Broadcast Message", "Maintenance Mode", "Back")
+    kb.add("Broadcast Message", "Maintenance Mode", get_text("btn_back", cid))
     return kb
 
 # ==========================================
-# 2. Start Command & Main Menu
+# 9. ROUTERS (START, TEXT, DOC, CALLBACK)
 # ==========================================
-@bot.message_handler(commands=['start', 'menu', 'help'])
-def cmd_start(message):
-    chat_id = message.chat.id
-    user_states.pop(chat_id, None) # Clear any orphaned states
+@bot.message_handler(commands=['start', 'menu'])
+def cmd_start(m):
+    user_states.pop(m.chat.id, None)
+    if not check_force_join(m.chat.id):
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("✅ Verify Join", callback_data="verify_join"))
+        msg = "⚠️ <b>Force Join Required!</b>\n\n━━━━━━━━━━━━━━━━━━\n" + "\n".join([f"➡️ {c['name']}: {c['url']}" for c in REQUIRED_CHANNELS])
+        bot.send_message(m.chat.id, msg, parse_mode="HTML", reply_markup=kb); return
+    bot.send_message(m.chat.id, get_text("welcome", m.chat.id), parse_mode="HTML", reply_markup=main_bottom_keyboard(m.chat.id))
+
+@bot.message_handler(commands=['lang'])
+def cmd_lang(m):
+    u = get_user_data(m.chat.id)
+    nl = "en" if u.get("lang", "bn") == "bn" else "bn"
+    update_user_field(m.chat.id, "lang", nl)
+    bot.send_message(m.chat.id, get_text("lang_changed", m.chat.id), reply_markup=main_bottom_keyboard(m.chat.id))
+
+@bot.message_handler(content_types=['document'])
+def handle_document(m):
+    cid = m.chat.id
+    sd = user_states.get(cid, {})
+    state = sd.get("state")
     
-    if not check_force_join(chat_id):
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("✅ Verify Join", callback_data="verify_join"))
-        msg = "⚠️ <b>Force Join Required!</b>\n\nPlease join the following channels:\n"
-        for ch in REQUIRED_CHANNELS:
-            msg += f"➡️ {ch['name']}: {ch['url']}\n"
-        bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=kb)
-        return
+    # CRITICAL FIX: Route Admin Buyer Report correctly
+    if state == "AWAITING_BUYER_REPORT" and cid == ADMIN_ID:
+        heavy_task_executor.submit(process_buyer_report, m)
+    elif state == "AWAITING_EXCEL_FILE":
+        heavy_task_executor.submit(_process_document, m)
+    else:
+        bot.send_message(cid, get_text("invalid_doc", cid))
 
-    bot.send_message(
-        chat_id, 
-        f"🏠 <b>Welcome to OEB NEXUS!</b>\n\nSelect an option below:", 
-        parse_mode="HTML", 
-        reply_markup=main_bottom_keyboard(chat_id)
-    )
-
-# ==========================================
-# 3. Main Text Router
-# ==========================================
 @bot.message_handler(content_types=['text'])
-def handle_text(message):
-    # Route heavy processing to background executor to protect polling thread
-    background_executor.submit(_process_main_router, message)
+def handle_text(m):
+    background_executor.submit(route_text, m)
 
-def _process_main_router(message):
-    chat_id = message.chat.id
-    text = message.text.strip()
+def route_text(m):
+    cid, txt = m.chat.id, m.text.strip()
+    if get_setting("maintenance_mode") and cid != ADMIN_ID: bot.send_message(cid, "🛠 Maintenance."); return
+    if is_user_banned(cid): bot.send_message(cid, "🚫 Banned."); return
     
-    # Security & Maintenance Checks
-    if get_setting("maintenance_mode", False) and chat_id != ADMIN_ID:
-        bot.send_message(chat_id, "🛠 Bot is under maintenance. Please try again later.")
-        return
-        
-    if is_user_banned(chat_id):
-        bot.send_message(chat_id, "🚫 You are banned from using this bot.")
-        return
+    # State Reset
+    if txt in [get_text("btn_main", cid), get_text("btn_back", cid), get_text("btn_cancel", cid), "❌ Cancel"]:
+        user_states.pop(cid, None)
+        bot.send_message(cid, get_text("welcome", cid), parse_mode="HTML", reply_markup=main_bottom_keyboard(cid)); return
 
-    # State Reset for Navigation
-    if text in ["Main Menu", "Back", "Cancel", "🏠 Main Menu", "❌ Cancel"]:
-        user_states.pop(chat_id, None)
-        bot.send_message(chat_id, "🏠 <b>Main Menu</b>", parse_mode="HTML", reply_markup=main_bottom_keyboard(chat_id))
-        return
-
-    # State Handling (Routing to specific flows)
-    state_data = user_states.get(chat_id)
-    if state_data:
-        state = state_data.get("state")
-        
-        if state == "AWAITING_UID":
-            bot.send_message(chat_id, handle_single_uid(chat_id, text), parse_mode="HTML", reply_markup=cancel_keyboard())
-            return
-        elif state == "AWAITING_SINGLE_DATA":
-            bot.send_message(chat_id, handle_single_data(chat_id, text), parse_mode="HTML", reply_markup=cancel_keyboard())
-            return
-        elif state == "AWAITING_MANUAL_PASSWORD":
-            bot.send_message(chat_id, handle_manual_password(chat_id, text), parse_mode="HTML", reply_markup=cancel_keyboard())
-            return
-        elif state == "AWAITING_BULK_TEXT":
-            res = handle_bulk_text(chat_id, text)
-            if res: bot.send_message(chat_id, res, parse_mode="HTML")
-            return
-        elif state == "AWAITING_2FA_GEN":
-            secret = text.replace(" ", "").upper()
-            try:
-                totp = pyotp.TOTP(secret)
-                code = totp.now()
-                bot.send_message(chat_id, f"🔐 <b>2FA Code:</b> <code>{code}</code>\n\n<i>Valid for 30 seconds.</i>", parse_mode="HTML", reply_markup=helper_tools_keyboard())
-            except Exception:
-                bot.send_message(chat_id, "❌ Invalid Secret Key.", reply_markup=helper_tools_keyboard())
-            user_states.pop(chat_id, None)
-            return
-        elif state == "AWAITING_ADMIN_PASS_RULE" and chat_id == ADMIN_ID:
-            update_setting("pass_rule", text)
-            bot.send_message(chat_id, f"✅ Password rule updated to: <code>{text}</code>", parse_mode="HTML", reply_markup=admin_sub_settings_keyboard())
-            user_states.pop(chat_id, None)
-            return
-        elif state == "AWAITING_BROADCAST_MSG" and chat_id == ADMIN_ID:
-            bot.send_message(chat_id, "🔄 Broadcasting...")
+    # State Handling
+    sd = user_states.get(cid)
+    if sd:
+        st = sd.get("state")
+        if st == "AWAITING_UID": bot.send_message(cid, handle_single_uid(cid, txt), parse_mode="HTML", reply_markup=cancel_keyboard()); return
+        elif st == "AWAITING_SINGLE_DATA": bot.send_message(cid, handle_single_data(cid, txt), parse_mode="HTML", reply_markup=cancel_keyboard()); return
+        elif st == "AWAITING_MANUAL_PASSWORD": bot.send_message(cid, handle_manual_password(cid, txt), parse_mode="HTML", reply_markup=cancel_keyboard()); return
+        elif st == "AWAITING_BULK_TEXT": 
+            r = handle_bulk_text(cid, txt)
+            if r: bot.send_message(cid, r, parse_mode="HTML"); return
+        elif st == "AWAITING_2FA_GEN":
+            try: bot.send_message(cid, f"🔐 <b>Code:</b> <code>{pyotp.TOTP(txt.replace(' ','').upper()).now()}</code>", parse_mode="HTML", reply_markup=helper_tools_keyboard(cid))
+            except: bot.send_message(cid, "❌ Invalid Key.", reply_markup=helper_tools_keyboard(cid))
+            user_states.pop(cid, None); return
+        elif st == "AWAITING_ADMIN_PASS_RULE" and cid == ADMIN_ID:
+            update_setting("pass_rule", txt)
+            bot.send_message(cid, f"✅ Rule updated: <code>{txt}</code>", parse_mode="HTML", reply_markup=admin_sub_settings_keyboard(cid))
+            user_states.pop(cid, None); return
+        elif st == "AWAITING_BROADCAST_MSG" and cid == ADMIN_ID:
+            bot.send_message(cid, "🔄 Broadcasting...")
             users = list(users_col.find({"banned": False}))
             count = 0
             for u in users:
-                try:
-                    bot.send_message(u["_id"], text, parse_mode="HTML")
-                    count += 1
-                    time.sleep(0.04)
-                except Exception: pass
-            bot.send_message(chat_id, f"✅ Broadcasted to {count} users.", reply_markup=admin_sub_system_keyboard())
-            user_states.pop(chat_id, None)
-            return
+                try: bot.send_message(u["_id"], txt, parse_mode="HTML"); count += 1; time.sleep(0.04)
+                except: pass
+            bot.send_message(cid, f"✅ Broadcasted to {count} users.", reply_markup=admin_sub_system_keyboard(cid))
+            user_states.pop(cid, None); return
 
-    # Menu Routing (Top Level)
-    if text == "Submit Tasks":
-        bot.send_message(chat_id, "📦 <b>Select Submission Type:</b>", parse_mode="HTML", reply_markup=submit_tasks_keyboard())
-    elif text == "Helper Tools":
-        bot.send_message(chat_id, "🛠 <b>Helper Tools:</b>", parse_mode="HTML", reply_markup=helper_tools_keyboard())
-    elif text == "Profile & Wallet":
-        bot.send_message(chat_id, "💼 <b>Profile & Wallet:</b>", parse_mode="HTML", reply_markup=account_keyboard())
-    elif text == "Reward & Support":
-        bot.send_message(chat_id, "🎁 <b>Rewards & Support:</b>", parse_mode="HTML", reply_markup=bonus_support_keyboard())
-    elif text == "Admin Control Center":
-        if chat_id == ADMIN_ID or get_user_data(chat_id).get("role") in ["admin", "sub_admin"]:
-            bot.send_message(chat_id, "⚙️ <b>Admin Control Center:</b>", parse_mode="HTML", reply_markup=admin_bottom_keyboard())
-            
-    # Submission Sub-menus
-    elif text == "Single Submission":
-        bot.send_message(chat_id, "📦 <b>Select Category:</b>", parse_mode="HTML", reply_markup=category_bottom_keyboard())
-        # Note: In a full implementation, clicking a category button would set the state to AWAITING_UID and store the category.
-    elif text == "Bulk Text":
-        state_data = user_states.get(chat_id, {})
-        state_data["state"] = "AWAITING_BULK_TEXT"
-        user_states[chat_id] = state_data
-        bot.send_message(chat_id, "📝 Send your bulk text (one task per line):", reply_markup=cancel_keyboard())
-    elif text == "Excel/CSV File":
-        state_data = user_states.get(chat_id, {})
-        state_data["state"] = "AWAITING_EXCEL_FILE"
-        user_states[chat_id] = state_data
-        bot.send_message(chat_id, "📂 Send your .xlsx or .csv file:", reply_markup=cancel_keyboard())
+    # CRITICAL FIX: Category Selection Logic
+    for cat in ["fb_cookie", "fb_2fa", "ig_cookie", "ig_2fa"]:
+        if txt.startswith(cat):
+            sd = user_states.get(cid, {}); sd["state"], sd["category"] = "AWAITING_UID", cat; user_states[cid] = sd
+            bot.send_message(cid, get_text("send_uid", cid), parse_mode="HTML", reply_markup=cancel_keyboard()); return
 
-    # Helper Tools Actions
-    elif text == "Temp Email":
-        rand_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-        email = f"{rand_str}@1secmail.com"
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("📥 Check Inbox", callback_data=f"check_otp_{email}"))
-        bot.send_message(chat_id, f"📧 <b>Your Temp Email:</b>\n<code>{email}</code>", parse_mode="HTML", reply_markup=kb)
-    elif text == "2FA Generator":
-        bot.send_message(chat_id, "🔐 Send the <b>2FA Secret Key</b>:", parse_mode="HTML", reply_markup=cancel_keyboard())
-        state_data = user_states.get(chat_id, {})
-        state_data["state"] = "AWAITING_2FA_GEN"
-        user_states[chat_id] = state_data
-    elif text == "Leaderboard":
-        pipeline = [
-            {"$group": {"_id": "$user_id", "total_earnings": {"$sum": "$rate"}, "total_tasks": {"$sum": 1}}},
-            {"$sort": {"total_earnings": -1}}, {"$limit": 10}
-        ]
-        results = list(submissions_col.aggregate(pipeline))
-        msg = "🏆 <b>Top 10 Workers</b>\n\n"
-        for i, r in enumerate(results, 1):
-            msg += f"{i}. <code>{r['_id']}</code> - 💰 {r['total_earnings']:.2f} BDT ({r['total_tasks']} tasks)\n"
-        bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=helper_tools_keyboard())
-
-    # Admin Sub-menus & Actions
-    elif text == "Task Management":
-        bot.send_message(chat_id, "📋 <b>Task Management:</b>", parse_mode="HTML", reply_markup=admin_sub_task_keyboard())
-    elif text == "Finance & Wallets":
-        bot.send_message(chat_id, "💰 <b>Finance & Wallets:</b>", parse_mode="HTML", reply_markup=admin_sub_finance_keyboard())
-    elif text == "Settings":
-        bot.send_message(chat_id, "⚙️ <b>Settings:</b>", parse_mode="HTML", reply_markup=admin_sub_settings_keyboard())
-    elif text == "System Tools":
-        bot.send_message(chat_id, "🖥 <b>System Tools:</b>", parse_mode="HTML", reply_markup=admin_sub_system_keyboard())
-    elif text == "Password Rule":
-        bot.send_message(chat_id, "🔑 Send the new password rule (or 'none' to disable):", reply_markup=cancel_keyboard())
-        state_data = user_states.get(chat_id, {})
-        state_data["state"] = "AWAITING_ADMIN_PASS_RULE"
-        user_states[chat_id] = state_data
-    elif text == "Broadcast Message":
-        bot.send_message(chat_id, "📢 Send the message to broadcast:", reply_markup=cancel_keyboard())
-        state_data = user_states.get(chat_id, {})
-        state_data["state"] = "AWAITING_BROADCAST_MSG"
-        user_states[chat_id] = state_data
-    elif text == "Buyer Report":
-        if chat_id == ADMIN_ID:
-            bot.send_message(chat_id, "📊 Send the buyer report (.csv/.xlsx) to match 'Hold' tasks.", reply_markup=cancel_keyboard())
-            state_data = user_states.get(chat_id, {})
-            state_data["state"] = "AWAITING_BUYER_REPORT"
-            state_data["target_date"] = "ALL"
-            state_data["target_cat"] = "ALL"
-            user_states[chat_id] = state_data
-
-# ==========================================
-# 4. Callback Query Handler
-# ==========================================
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    background_executor.submit(_process_callbacks, call)
-
-def _process_callbacks(call):
-    chat_id = call.message.chat.id
-    data = call.data
+    # Menu Routing (Translated)
+    if txt == get_text("btn_submit", cid): bot.send_message(cid, get_text("select_sub_type", cid), parse_mode="HTML", reply_markup=submit_tasks_keyboard(cid))
+    elif txt == get_text("btn_tools", cid): bot.send_message(cid, get_text("select_tool", cid), parse_mode="HTML", reply_markup=helper_tools_keyboard(cid))
+    elif txt == get_text("btn_wallet", cid): bot.send_message(cid, get_text("select_wallet", cid), parse_mode="HTML", reply_markup=account_keyboard(cid))
+    elif txt == get_text("btn_reward", cid): bot.send_message(cid, get_text("select_reward", cid), parse_mode="HTML", reply_markup=bonus_support_keyboard(cid))
+    elif txt == get_text("btn_admin", cid) and (cid == ADMIN_ID or get_user_data(cid).get("role") in ["admin", "sub_admin"]):
+        bot.send_message(cid, get_text("admin_welcome", cid), parse_mode="HTML", reply_markup=admin_bottom_keyboard(cid))
+        
+    # Sub-menus
+    elif txt == get_text("btn_single", cid): bot.send_message(cid, get_text("select_cat", cid), parse_mode="HTML", reply_markup=category_bottom_keyboard(cid))
+    elif txt == get_text("btn_bulk", cid): sd = user_states.get(cid, {}); sd["state"] = "AWAITING_BULK_TEXT"; user_states[cid] = sd; bot.send_message(cid, "📝 Send bulk text:", reply_markup=cancel_keyboard())
+    elif txt == get_text("btn_excel", cid): sd = user_states.get(cid, {}); sd["state"] = "AWAITING_EXCEL_FILE"; user_states[cid] = sd; bot.send_message(cid, "📂 Send file:", reply_markup=cancel_keyboard())
     
+    # Wallet & Tools Actions (CRITICAL FIX: Added missing handlers)
+    elif txt == get_text("btn_balance", cid):
+        u = get_user_data(cid)
+        msg = get_text("balance_msg", cid).format(balance=f"{u['balance']:.2f}", hold=f"{u['hold_balance']:.2f}", virtual=f"{u['virtual_wallet']:.2f}")
+        bot.send_message(cid, msg, parse_mode="HTML", reply_markup=account_keyboard(cid))
+    elif txt == get_text("btn_withdraw", cid):
+        bot.send_message(cid, get_text("withdraw_msg", cid), parse_mode="HTML", reply_markup=account_keyboard(cid))
+    elif txt == get_text("btn_tx_history", cid):
+        subs = list(submissions_col.find({"user_id": cid}).sort("submitted_at", -1).limit(5))
+        if not subs: bot.send_message(cid, get_text("no_tx", cid), reply_markup=account_keyboard(cid))
+        else:
+            msg = get_text("tx_msg", cid) + "\n"
+            for s in subs: msg += f"🎫 <code>{s['track_id']}</code> | 💰 {s['rate']} | {s['status']}\n"
+            bot.send_message(cid, msg, parse_mode="HTML", reply_markup=account_keyboard(cid))
+    elif txt == get_text("btn_bonus", cid):
+        u = get_user_data(cid); today = get_bd_time().strftime("%Y-%m-%d")
+        if u.get("last_bonus_date") == today: bot.send_message(cid, get_text("bonus_already", cid), reply_markup=bonus_support_keyboard(cid))
+        else: update_user_field(cid, "last_bonus_date", today); users_col.update_one({"_id": cid}, {"$inc": {"balance": 1.0}}); bot.send_message(cid, get_text("bonus_claimed", cid), parse_mode="HTML", reply_markup=bonus_support_keyboard(cid))
+    elif txt == get_text("btn_support", cid): bot.send_message(cid, get_text("support_msg", cid), parse_mode="HTML", reply_markup=bonus_support_keyboard(cid))
+    elif txt == get_text("btn_temp_email", cid):
+        em = f"{''.join(random.choices(string.ascii_lowercase, k=8))}@1secmail.com"
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("📥 Check Inbox", callback_data=f"chk_otp_{em}"))
+        bot.send_message(cid, f"📧 <b>Temp Email:</b>\n<code>{em}</code>", parse_mode="HTML", reply_markup=kb)
+    elif txt == get_text("btn_2fa", cid): sd = user_states.get(cid, {}); sd["state"] = "AWAITING_2FA_GEN"; user_states[cid] = sd; bot.send_message(cid, "🔐 Send Secret:", reply_markup=cancel_keyboard())
+    elif txt == get_text("btn_leaderboard", cid):
+        res = list(submissions_col.aggregate([{"$group": {"_id": "$user_id", "tot": {"$sum": "$rate"}}}, {"$sort": {"tot": -1}}, {"$limit": 5}]))
+        msg = "🏆 <b>Top 5 Workers</b>\n\n━━━━━━━━━━━━━━━━━━\n" + "\n".join([f"{i+1}. <code>{r['_id']}</code> - 💰 {r['tot']:.1f} BDT" for i, r in enumerate(res)])
+        bot.send_message(cid, msg, parse_mode="HTML", reply_markup=helper_tools_keyboard(cid))
+        
+    # Admin Actions
+    elif txt == get_text("btn_task_mgmt", cid): bot.send_message(cid, "📋 <b>Task Management:</b>", parse_mode="HTML", reply_markup=admin_sub_task_keyboard(cid))
+    elif txt == get_text("btn_finance", cid): bot.send_message(cid, "💰 <b>Finance:</b>", parse_mode="HTML", reply_markup=admin_sub_finance_keyboard(cid))
+    elif txt == get_text("btn_settings", cid): bot.send_message(cid, "⚙️ <b>Settings:</b>", parse_mode="HTML", reply_markup=admin_sub_settings_keyboard(cid))
+    elif txt == get_text("btn_system", cid): bot.send_message(cid, "🖥 <b>System:</b>", parse_mode="HTML", reply_markup=admin_sub_system_keyboard(cid))
+    elif txt == get_text("btn_buyer_report", cid) and cid == ADMIN_ID:
+        sd = user_states.get(cid, {}); sd["state"] = "AWAITING_BUYER_REPORT"; user_states[cid] = sd; bot.send_message(cid, "📊 Send Report (.csv/.xlsx):", reply_markup=cancel_keyboard())
+    elif txt == get_text("btn_force_close", cid) and cid == ADMIN_ID:
+        cnt = 0
+        for s in submissions_col.find({"date_key": get_bd_time().strftime("%Y-%m-%d"), "status": "Hold"}):
+            submissions_col.update_one({"_id": s["_id"]}, {"$set": {"status": "Rejected"}})
+            users_col.update_one({"_id": s["user_id"], "hold_balance": {"$gte": s["rate"]}}, {"$inc": {"hold_balance": -s["rate"]}})
+            cnt += 1
+        bot.send_message(cid, f"✅ Closed {cnt} tasks.", reply_markup=admin_sub_task_keyboard(cid))
+    elif txt == "Password Rule" and cid == ADMIN_ID:
+        sd = user_states.get(cid, {}); sd["state"] = "AWAITING_ADMIN_PASS_RULE"; user_states[cid] = sd; bot.send_message(cid, "🔑 Send rule:", reply_markup=cancel_keyboard())
+    elif txt == "Broadcast Message" and cid == ADMIN_ID:
+        sd = user_states.get(cid, {}); sd["state"] = "AWAITING_BROADCAST_MSG"; user_states[cid] = sd; bot.send_message(cid, "📢 Send msg:", reply_markup=cancel_keyboard())
+
+@bot.callback_query_handler(func=lambda c: True)
+def handle_cb(c):
+    background_executor.submit(process_cb, c)
+
+def process_cb(c):
+    cid, data = c.message.chat.id, c.data
     try:
-        # 1. Force Join Verification
         if data == "verify_join":
-            if check_force_join(chat_id):
-                bot.answer_callback_query(call.id, "✅ Verified Successfully!")
-                bot.send_message(chat_id, "🏠 <b>Main Menu</b>", parse_mode="HTML", reply_markup=main_bottom_keyboard(chat_id))
-            else:
-                bot.answer_callback_query(call.id, "❌ You haven't joined the channels yet!", show_alert=True)
-
-        # 2. Temp Mail OTP Check
-        elif data.startswith("check_otp_"):
-            email = data.replace("check_otp_", "")
-            bot.answer_callback_query(call.id, "🔄 Fetching inbox...")
-            
-            username, domain = email.split('@')
-            url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={username}&domain={domain}"
-            
-            res = requests.get(url, timeout=5.0).json()
-            if not res:
-                bot.send_message(chat_id, "📭 Inbox is empty. Try again in a few seconds.", reply_markup=helper_tools_keyboard())
-                return
-                
-            msg_id = res[-1]['id']
-            url2 = f"https://www.1secmail.com/api/v1/?action=readMessage&login={username}&domain={domain}&id={msg_id}"
-            msg_data = requests.get(url2, timeout=5.0).json()
-            
-            body = msg_data.get('textBody', '') or msg_data.get('body', '')
-            safe_body = sanitize_html(body)
-            
-            bot.send_message(chat_id, f"📩 <b>Latest Email Body:</b>\n\n<pre>{safe_body}</pre>", parse_mode="HTML", reply_markup=helper_tools_keyboard())
-
-        # 3. Admin Dashboard Tools
-        elif data == "shift_next_day":
-            if chat_id != ADMIN_ID: return
-            tomorrow = (get_bd_time() + timedelta(days=1)).strftime("%Y-%m-%d")
-            config = get_shift_config()
-            config["current_date"] = tomorrow
-            update_setting("shift_config", config)
-            bot.answer_callback_query(call.id, f"✅ Shift advanced to {tomorrow}")
-            
-        elif data.startswith("force_close_"):
-            if chat_id != ADMIN_ID: return
-            date_str = data.replace("force_close_", "")
-            bot.answer_callback_query(call.id, "🔄 Force closing shift...")
-            
-            subs = submissions_col.find({"date_key": date_str, "status": "Hold"})
-            count = 0
-            for s in subs:
-                amt = float(s.get("rate", 0.0))
-                wid = s.get("user_id")
-                submissions_col.update_one({"_id": s["_id"]}, {"$set": {"status": "Rejected"}})
-                users_col.update_one({"_id": wid, "hold_balance": {"$gte": amt}}, {"$inc": {"hold_balance": -amt}})
-                count += 1
-                
-            bot.send_message(chat_id, f"✅ Force closed {count} tasks for {date_str}. Escrow refunded.", reply_markup=admin_sub_task_keyboard())
-            gc.collect()
-            
-        elif data.startswith("exp_select_date_"):
-            if chat_id != ADMIN_ID: return
-            date_str = data.replace("exp_select_date_", "")
-            bot.answer_callback_query(call.id, "🔄 Generating CSV...")
-            
-            subs = submissions_col.find({"date_key": date_str})
-            buf = io.StringIO()
-            writer = csv.writer(buf)
-            writer.writerow(["Track ID", "UID", "Category", "Rate", "Status", "User ID"])
-            for s in subs:
-                writer.writerow([s.get('track_id'), s.get('uid'), s.get('category'), s.get('rate'), s.get('status'), s.get('user_id')])
-                
-            buf.seek(0)
-            doc_buf = io.BytesIO(buf.getvalue().encode('utf-8'))
-            bot.send_document(chat_id, doc_buf, caption=f"📊 Report for {date_str}", visible_file_name=f"Report_{date_str}.csv", reply_markup=admin_sub_task_keyboard())
-            gc.collect()
-
-    except Exception as e:
-        print(f"[Callback] Critical error: {e}")
-        bot.answer_callback_query(call.id, "❌ An error occurred.", show_alert=True)
+            if check_force_join(cid): 
+                bot.answer_callback_query(c.id, "✅ Verified!")
+                bot.send_message(cid, get_text("welcome", cid), parse_mode="HTML", reply_markup=main_bottom_keyboard(cid))
+            else: bot.answer_callback_query(c.id, "❌ Not joined!", show_alert=True)
+        elif data.startswith("chk_otp_"):
+            em = data.replace("chk_otp_", ""); bot.answer_callback_query(c.id, "🔄 Fetching...")
+            u, d = em.split('@')
+            res = requests.get(f"https://www.1secmail.com/api/v1/?action=getMessages&login={u}&domain={d}", timeout=5.0).json()
+            if not res: bot.send_message(cid, "📭 Empty.", reply_markup=helper_tools_keyboard(cid)); return
+            msg = requests.get(f"https://www.1secmail.com/api/v1/?action=readMessage&login={u}&domain={d}&id={res[-1]['id']}", timeout=5.0).json()
+            bot.send_message(cid, f"📩 <b>Email Body:</b>\n\n<pre>{sanitize_html(msg.get('textBody', ''))}</pre>", parse_mode="HTML", reply_markup=helper_tools_keyboard(cid))
+    except Exception as e: print(e); bot.answer_callback_query(c.id, "❌ Error", show_alert=True)
 
 # ==========================================
-# 5. Final Execution Block (Start Server & Bot)
+# 10. DAEMON & EXECUTION
 # ==========================================
+def daemon():
+    while True:
+        time.sleep(60)
+        now = get_bd_time()
+        if now.hour == 0 and now.minute == 0:
+            yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+            submissions_col.delete_many({"date_key": yesterday, "status": {"$in": ["Approved", "Rejected"]}})
+
+threading.Thread(target=daemon, daemon=True).start()
+
+app = Flask(__name__)
+@app.route('/')
+def home(): return "OEB NEXUS Active"
+
 if __name__ == "__main__":
-    print("="*50)
-    print("🚀 OEB NEXUS ENGINE STARTING...")
-    print("="*50)
-    
-    # Start the 24/7 Web Server in a daemon thread (keeps Render/Heroku alive)
-    web_thread = threading.Thread(target=run_web, daemon=True)
-    web_thread.start()
-    print("[Server] Flask + Waitress running on port 10000.")
-    
-    # Start the Telegram Bot Polling
-    print("[Bot] Starting infinity polling...")
-    # skip_pending=True ensures we don't process old messages and crash RAM on startup
+    threading.Thread(target=lambda: serve(app, host='0.0.0.0', port=10000), daemon=True).start()
+    print("🚀 OEB NEXUS STARTED...")
     bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
-
-
