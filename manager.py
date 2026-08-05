@@ -35,10 +35,10 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 # ==========================================
 # 1. Environment Variables & Constants
 # ==========================================
-BOT_TOKEN = os.getenv("8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4")
-MONGO_URL = os.getenv("mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
-ADMIN_ID = int(os.getenv("ADMIN_ID","6257034751"))
-BACKUP_CHANNEL_ID = int(os.getenv("BACKUP_CHANNEL_ID","-1003943094107"))
+BOT_TOKEN = os.getenv("BOT_TOKEN","8765437674:AAGCMs5y3_8WXduxd_kSpF_4Jm-2EovgHl4")
+MONGO_URL = os.getenv("MONGO_URL","mongodb+srv://admin:W3tcfbw_EW8QfR-@cluster0.nvv6umd.mongodb.net/?appName=Cluster0")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6257034751"))
+BACKUP_CHANNEL_ID = int(os.getenv("BACKUP_CHANNEL_ID", "-1003943094107"))
 
 BD_TIMEZONE = timezone(timedelta(hours=6))
 
