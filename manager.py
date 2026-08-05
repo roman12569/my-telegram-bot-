@@ -49,9 +49,9 @@ UAS = [
 ]
 
 REQUIRED_CHANNELS = [
-    {"name": "𝙊𝙣𝙡𝙞𝙣𝙚 𝙀𝙖𝙧𝙣𝙞𝙣𝙜 𝘽𝙖𝙯𝙖𝙧™ 💸", "earningbazar0": "@earningbazar0", "url": "https://t.me/earningbazar0"},
-    {"name": "𝙾𝙽𝙻𝙸𝙽𝙴 𝙴𝙰𝚁𝙽𝙸𝙽𝙶 𝙼𝙴𝚃𝙷𝙾𝙳", "onlineearningmethod5": "@onlineearningmethod5", "url": "https://t.me/onlineearningmethod5"}
-    {"name": "Online Earning Shop 📦", "onlineearningshop01": "@onlineearningshop01", "url": "https://t.me/onlineearningshop01"}
+    {"name": "Online Earning Bazar™🍀", "username": "@earningbazar0", "url": "https://t.me/earningbazar0"},
+    {"name": "ONLINE EARNING METHOD", "username": "@onlineearningmethod5", "url": "https://t.me/onlineearningmethod5"},
+    {"name": "Online Earning Shop🗂️", "username": "@onlineearningshop01", "url": "https://t.me/onlineearningshop01"}
 ]
 
 # ==========================================
