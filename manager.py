@@ -257,7 +257,7 @@ def run_web():
 # all handlers are registered before the bot starts polling.
 
 
-```python
+
 # ==============================================================================
 # OEB NEXUS - PART 2: Core Utilities, Security, User Management & Nightly Daemon
 # ==============================================================================
@@ -513,10 +513,9 @@ def escrow_and_cleanup_daemon():
 # Start the daemon in a background thread
 threading.Thread(target=escrow_and_cleanup_daemon, daemon=True, name="NightlyCleanupDaemon").start()
 
-print("[Part 2] Core Utilities, Security, User Management & Nightly Daemon loaded successfully.")
-```
 
-```python
+
+
 # ==============================================================================
 # OEB NEXUS - PART 3: Live Checker Engine, Dynamic Pricing & Shift Control
 # ==============================================================================
@@ -707,10 +706,7 @@ def is_submission_allowed(cat_key, req_time):
         # worker submissions due to a backend configuration glitch.
         return True, "Allowed"
 
-print("[Part 3] Live Checker Engine, Dynamic Pricing & Shift Control loaded successfully.")
-```
 
-```python
 # ==============================================================================
 # OEB NEXUS - PART 4: Smart Submission Hub (Single & Bulk Text Processing)
 # ==============================================================================
@@ -940,10 +936,7 @@ def handle_bulk_text(chat_id, text):
     
     return None  # Return None because the initial "Processing" message was already sent
 
-print("[Part 4] Smart Submission Hub (Single & Bulk Text Processing) loaded successfully.")
-```
 
-```python
 # ==============================================================================
 # OEB NEXUS - PART 5: Master File Processor (Excel/CSV Deep Extract)
 # ==============================================================================
@@ -1167,10 +1160,7 @@ def _process_document(message):
         # CRITICAL: Force garbage collection to prevent RAM overflow on 512MB servers
         gc.collect()
 
-print("[Part 5] Master File Processor (Excel/CSV Deep Extract) loaded successfully.")
-```
 
-```python
 # ==============================================================================
 # OEB NEXUS - PART 6: Auto-Matcher & Cloud Backup (Buyer Report Processing)
 # ==============================================================================
@@ -1350,10 +1340,7 @@ def process_buyer_report(message):
         # CRITICAL: Force garbage collection to release heavy Excel/CSV processing memory
         gc.collect()
 
-print("[Part 6] Auto-Matcher & Cloud Backup (Buyer Report Processing) loaded successfully.")
-```
 
-```python
 # ==============================================================================
 # OEB NEXUS - PART 7: Dynamic UI, Main Router, Callbacks & Final Execution
 # ==============================================================================
