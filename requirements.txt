@@ -1,9 +1,7 @@
 pyTelegramBotAPI
-pymongo
-openpyxl
-Pillow
-flask
-requests
-pyotp
-google-generativeai
+Flask
 waitress
+pymongo
+requests
+openpyxl
+pyotp
