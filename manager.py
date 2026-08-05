@@ -1701,5 +1701,5 @@ if __name__ == "__main__":
     print("[Bot] Starting infinity polling...")
     # skip_pending=True ensures we don't process old messages and crash RAM on startup
     bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
-```
+
 
